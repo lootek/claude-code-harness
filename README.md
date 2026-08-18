@@ -8,7 +8,7 @@ fzf-driven provider/model switching for [Claude Code](https://claude.com/claude-
 - `tools/providers.yaml` — provider definitions: base URLs, auth-token file paths, per-provider env, and a `listcmd` that enumerates each provider's model IDs.
 - `sh-aliases/ai` — `ccc` / `ccr` / `ccprov` shell functions and the `CCC_PY` / `CCC_WRAPPER` paths. Source this from your shell rc.
 - `hooks/` — Claude Code hooks: `safe_command.py` (PreToolUse guard for destructive/shell-injection commands), `log_commands.py` / `prompt_history.py` / `export_session.py` / `flush_stale_dumps.py` (audit + session dump helpers), `session-env-check.sh`. See `hooks/README` if present; tests under `hooks/tests/`.
-- `plugins/` — a Claude Code plugin marketplace (`plugins/.claude-plugin/marketplace.json`): `imagine` (OpenRouter image generation), `mr-monitor` + `mr-review` (GitLab MR pipeline/inline-comment workflows), `review-board` (multi-persona review with ~18 reviewer subagents). Install via `/plugin marketplace add <repo>`.
+- `plugins/` — the 4 public plugins (`imagine`, `mr-monitor`, `mr-review`, `review-board`), declared by the root `.claude-plugin/marketplace.json` as the `lootek` marketplace. `imagine` = OpenRouter image generation; `mr-monitor` + `mr-review` = GitLab MR pipeline/inline-comment workflows; `review-board` = multi-persona review with ~18 reviewer subagents. Install via `/plugin marketplace add lootek/claude-code-harness`.
 
 `cc.py` finds `providers.yaml` **next to itself** (`tools/providers.yaml`), falling back to `~/.claude/providers.yaml`.
 

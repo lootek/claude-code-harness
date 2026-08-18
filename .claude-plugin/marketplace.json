@@ -7,19 +7,19 @@
   "plugins": [
     {
       "name": "imagine",
-      "source": "./imagine"
+      "source": "./plugins/imagine"
     },
     {
       "name": "mr-monitor",
-      "source": "./mr-monitor"
+      "source": "./plugins/mr-monitor"
     },
     {
       "name": "mr-review",
-      "source": "./mr-review"
+      "source": "./plugins/mr-review"
     },
     {
       "name": "review-board",
-      "source": "./review-board"
+      "source": "./plugins/review-board"
     }
   ]
 }
