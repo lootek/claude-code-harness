@@ -7,8 +7,12 @@ fzf-driven provider/model switching for [Claude Code](https://claude.com/claude-
 - `tools/cc.py` — the wrapper (`ccc` / `ccr`). Reads a YAML config, runs `fzf`, exports env, execs `claude`.
 - `tools/providers.yaml` — provider definitions: base URLs, auth-token file paths, per-provider env, and a `listcmd` that enumerates each provider's model IDs.
 - `sh-aliases/ai` — `ccc` / `ccr` / `ccprov` shell functions and the `CCC_PY` / `CCC_WRAPPER` paths. Source this from your shell rc.
+- `hooks/` — Claude Code hooks: `safe_command.py` (PreToolUse guard for destructive/shell-injection commands), `log_commands.py` / `prompt_history.py` / `export_session.py` / `flush_stale_dumps.py` (audit + session dump helpers), `session-env-check.sh`. See `hooks/README` if present; tests under `hooks/tests/`.
+- `plugins/` — a Claude Code plugin marketplace (`plugins/.claude-plugin/marketplace.json`): `imagine` (OpenRouter image generation), `mr-monitor` + `mr-review` (GitLab MR pipeline/inline-comment workflows), `review-board` (multi-persona review with ~18 reviewer subagents). Install via `/plugin marketplace add <repo>`.
 
 `cc.py` finds `providers.yaml` **next to itself** (`tools/providers.yaml`), falling back to `~/.claude/providers.yaml`.
+
+> **Note:** `safe_command.py`'s `CURL_POST_ALLOW_PREFIXES` (read-only API endpoints pre-approved for `curl` POST) is **empty by default** and populated from the `CC_CURL_POST_ALLOW` env var (one URL prefix per line). No internal endpoints ship in the repo. The `review-board` plugin ships 18 generic reviewers; the original private config had 4 more (Vault SME, PM/PdM, SCP/SCS SME, SOC Analyst) that were employer-specific and are not published here. The `tech-doc-assist` plugin is also withheld (it was personalized to a specific team).
 
 ## Install
 
@@ -66,4 +70,4 @@ A provider can declare extra env vars (`env:` block) that the wrapper exports �
 
 ## License
 
-None yet — all rights reserved. Add one before depending on this.
+MIT — see [LICENSE](LICENSE).
