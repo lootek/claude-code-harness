@@ -12,7 +12,7 @@ fzf-driven provider/model switching for [Claude Code](https://claude.com/claude-
 
 `cc.py` finds `providers.yaml` **next to itself** (`tools/providers.yaml`), falling back to `~/.claude/providers.yaml`.
 
-> **Note:** `safe_command.py`'s `CURL_POST_ALLOW_PREFIXES` (read-only API endpoints pre-approved for `curl` POST) is **empty by default** and populated from the `CC_CURL_POST_ALLOW` env var (one URL prefix per line). No internal endpoints ship in the repo. The `review-board` plugin ships 18 generic reviewers; the original private config had 4 more (Vault SME, PM/PdM, SCP/SCS SME, SOC Analyst) that were employer-specific and are not published here. The `tech-doc-assist` plugin is also withheld (it was personalized to a specific team).
+> **Note:** `safe_command.py`'s `CURL_POST_ALLOW_PREFIXES` (read-only API endpoints pre-approved for `curl` POST) is **empty by default** and populated from the `CC_CURL_POST_ALLOW` env var (one URL prefix per line). No endpoints ship built-in. The `review-board` plugin ships 18 reviewer subagents; a few additional personas are kept in a private config and not published here. The `tech-doc-assist` plugin is likewise withheld (private/personal config).
 
 ## Install
 
