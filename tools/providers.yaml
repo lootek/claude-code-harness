@@ -1,0 +1,122 @@
+# providers.yaml — read by tools/cc.py (co-located). Install next to the
+# script (e.g. ~/.claude/tools/providers.yaml); cc.py falls back to
+# ~/.claude/providers.yaml if not found here.
+#
+# max_output_tokens: empty by default → claude code applies its per-model
+#   default (the CLI clamps explicit values anyway). Set to an int — e.g. for
+#   a local model with no CLI per-model table entry — and the wrapper exports
+#   CLAUDE_CODE_MAX_OUTPUT_TOKENS=<value>. Empty/absent → the env var stays
+#   unset.
+#
+# auth_token: a literal (e.g. ollama) OR a path to a file holding only the
+#   token (e.g. ~/.secrets/openrouter). Paths start with ~ or /. The wrapper
+#   reads the file and strips whitespace.
+#
+# env: optional map of extra env vars the wrapper exports for that provider
+#   (BYO providers like z.ai that need ANTHROPIC_DEFAULT_*_MODEL for claude
+#   code's background haiku calls, API_TIMEOUT_MS, etc.). Values are literal
+#   strings — a leading ~ or / is NOT treated as a file path here (only
+#   auth_token does that). Exported after the ANTHROPIC_* clear, so keys
+#   starting with ANTHROPIC_ are safe.
+
+providers:
+  anthropic:
+    native: true
+    max_output_tokens:
+    # Current Claude catalogue (api.anthropic.com IDs), refreshed Aug 2026.
+    # Context windows (claude code 2.1.212 context table):
+    #   claude-fable-5, claude-opus-5         → native_1m (auto 1M, no suffix)
+    #   claude-opus-4-{8,7,6}, claude-sonnet-{5,4-6} → 200k native, supports_1m_suffix
+    #       (append [1m] to the model id to unlock 1M; claude code strips it
+    #        before the API call and routes the 1m-beta header)
+    #   claude-haiku-4-5-20251001             → 200k only
+    # If ~/.secrets/anthropic exists, query /v1/models live; else use the list
+    # below. [1m] variants are emitted for the suffix-capable non-native models
+    # so the 1M option shows in fzf.
+    listcmd: |
+      if [[ -f ~/.secrets/anthropic ]]; then
+        curl -s https://api.anthropic.com/v1/models \
+          -H "anthropic-version: 2023-06-01" \
+          -H "x-api-key: $(cat ~/.secrets/anthropic)" \
+        | jq -r '.data[].id' 2>/dev/null
+      else
+        for m in \
+          claude-fable-5 \
+          claude-opus-5 \
+          claude-opus-4-8 \
+          claude-opus-4-7 \
+          claude-opus-4-6 \
+          claude-sonnet-5 \
+          claude-sonnet-4-6 \
+          claude-haiku-4-5-20251001
+        do
+          printf '%s\n' "$m"
+          case "$m" in
+            claude-opus-4-*|claude-sonnet-*) printf '%s[1m]\n' "$m" ;;
+          esac
+        done
+      fi
+
+  ollama:
+    base_url: http://localhost:11434
+    auth_token: ollama
+    max_output_tokens:
+    # claude code 2.1.212 honors the [1m] suffix for ANY provider, not just
+    # api.anthropic.com — NPc()'s first branch is ub(e)=/\[1m\]/i.test(model),
+    # ungated by firstParty. The suffix grants a 1M context window and is
+    # stripped (oi()->Bs()) before the ollama API call, so the backend sees
+    # the plain runnable name. Issue #46416 was closed NOT_PLANNED but the
+    # suffix path works regardless in 2.1.212+.
+    # Cloud models run as <name>:cloud. ollama.com/api/tags now returns non-zero
+    # size for cloud entries too, so the old size==0 heuristic emitted broken
+    # plain names (e.g. `kimi-k3` → "model not found"); append :cloud to every
+    # catalogue entry instead. Local `ollama list` already gives correct names.
+    # 1M-capable cloud models get a [1m] variant (glm-5.2: 1,000,000;
+    # kimi-k3: 1,048,576 — both confirmed via ollama /api/show).
+    listcmd: |
+      {
+        ollama list 2>/dev/null | awk 'NR>1 {print $1}'
+        curl -s https://ollama.com/api/tags 2>/dev/null \
+          | jq -r '.models[].name' 2>/dev/null \
+          | sed 's/$/:cloud/'
+      } | sort -u | awk '
+        { print }
+        /^(glm-5\.2|kimi-k3):cloud$/ { print $0 "[1m]" }
+      '
+
+  openrouter:
+    base_url: https://openrouter.ai/api
+    auth_token: ~/.secrets/openrouter
+    max_output_tokens:
+    listcmd: 'curl -s https://openrouter.ai/api/v1/models | jq -r ".data[].id" | grep -i anthropic'
+
+  poe:
+    base_url: https://api.poe.com
+    auth_token: ~/.secrets/poe
+    max_output_tokens:
+    listcmd: 'curl -s https://api.poe.com/v1/models | jq -r ".data[].id" | grep -iE "claude-(opus|sonnet|haiku)"'
+
+  zai:
+    # Z.AI (Zhipu) — Anthropic-compatible endpoint, Bearer auth.
+    # https://docs.z.ai/devpack/tool/claude  (api key in ~/.secrets/z.ai)
+    # The [1m] suffix works for any provider in claude code 2.1.212+ (see ollama
+    # note above); glm-5.2[1m] is confirmed 1M by z.ai's own config guide.
+    base_url: https://api.z.ai/api/anthropic
+    auth_token: ~/.secrets/z.ai
+    max_output_tokens:
+    env:
+      # Route claude code's internal background slots (title gen, etc.) to
+      # z.ai instead of api.anthropic.com (which has no key here).
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: glm-4.7
+      ANTHROPIC_DEFAULT_SONNET_MODEL: glm-5.2[1m]
+      ANTHROPIC_DEFAULT_OPUS_MODEL: glm-5.2[1m]
+      # 1M-context generations are slow; raise the per-request timeout.
+      API_TIMEOUT_MS: "3000000"
+      # Stop upgrade-check/telemetry pings to api.anthropic.com.
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    listcmd: |
+      curl -s https://api.z.ai/api/anthropic/v1/models \
+        -H "Authorization: Bearer $(cat ~/.secrets/z.ai)" \
+        -H "anthropic-version: 2023-06-01" \
+      | jq -r '.data[].id' 2>/dev/null \
+      | awk '{ print } /^glm-5\.[23]$/ { print $0 "[1m]" }'

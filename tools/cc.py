@@ -24,7 +24,14 @@ try:
 except ImportError:
     sys.exit("pyyaml missing — run: ~/.claude/.cc-venv/bin/pip install pyyaml")
 
-CFG = os.path.expanduser("~/.claude/providers.yaml")
+# providers.yaml lives next to this script (tools/providers.yaml). Fall back
+# to ~/.claude/providers.yaml for legacy installs. First existing file wins.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CFG_CANDIDATES = [
+    os.path.join(SCRIPT_DIR, "providers.yaml"),
+    os.path.expanduser("~/.claude/providers.yaml"),
+]
+CFG = next((p for p in CFG_CANDIDATES if os.path.isfile(p)), CFG_CANDIDATES[0])
 OUR_FLAGS = {"--continue", "--provider", "--model"}
 
 
