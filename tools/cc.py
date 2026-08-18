@@ -4,7 +4,7 @@
 Reads ~/.claude/providers.yaml, lets you pick a provider and a model (fzf),
 exports the right ANTHROPIC_* env, and execs `claude`.
 
-Usage (via ~/.zsh-aliases/ai):
+Usage (source sh-aliases/ai from your shell rc, then):
     ccc [claude-args...]            fresh session
     ccr [claude-args...]            resume most-recent session (--continue)
     ccc --provider ollama --model glm-5.2:cloud -p "hi"

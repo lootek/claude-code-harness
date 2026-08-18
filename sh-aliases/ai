@@ -1,0 +1,22 @@
+# sh-aliases/ai — fzf-driven claude code provider/model picker
+#
+# Source from your shell rc, e.g. in ~/.zshrc:
+#   [ -f ~/path/to/claude-code-harness/sh-aliases/ai ] && source ~/path/to/...
+# or copy to ~/.zsh-aliases/ai if you keep an aliases dir.
+#
+#   ccc [claude-args...]        fresh session
+#   ccr [claude-args...]        resume most-recent session (--continue)
+#   ccc --provider P --model M  skip the fzf pickers
+#   ccprov                      print active ANTHROPIC_*/MAX_OUTPUT env
+#
+# Config:  ~/.claude/tools/providers.yaml  (co-located with the wrapper;
+#           cc.py falls back to ~/.claude/providers.yaml)
+# Wrapper: ~/.claude/tools/cc.py
+# Venv:    ~/.claude/.cc-venv       (pyyaml; see README install steps)
+
+CCC_PY=~/.claude/.cc-venv/bin/python
+CCC_WRAPPER=~/.claude/tools/cc.py
+
+ccc()    { "$CCC_PY" "$CCC_WRAPPER" "$@"; }
+ccr()    { "$CCC_PY" "$CCC_WRAPPER" --continue "$@"; }
+ccprov() { env | grep -E '^(ANTHROPIC|CLAUDE_CODE_MAX_OUTPUT)' | sort; }

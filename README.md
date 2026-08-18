@@ -6,6 +6,7 @@ fzf-driven provider/model switching for [Claude Code](https://claude.com/claude-
 
 - `tools/cc.py` — the wrapper (`ccc` / `ccr`). Reads a YAML config, runs `fzf`, exports env, execs `claude`.
 - `tools/providers.yaml` — provider definitions: base URLs, auth-token file paths, per-provider env, and a `listcmd` that enumerates each provider's model IDs.
+- `sh-aliases/ai` — `ccc` / `ccr` / `ccprov` shell functions and the `CCC_PY` / `CCC_WRAPPER` paths. Source this from your shell rc.
 
 `cc.py` finds `providers.yaml` **next to itself** (`tools/providers.yaml`), falling back to `~/.claude/providers.yaml`.
 
@@ -18,9 +19,11 @@ cp tools/cc.py tools/providers.yaml ~/.claude/tools/
 # 2. Make cc.py executable
 chmod +x ~/.claude/tools/cc.py
 
-# 3. Wire up shell functions (ccc = fresh, ccr = resume)
-ccc() { python3 ~/.claude/tools/cc.py "$@"; }
-ccr() { python3 ~/.claude/tools/cc.py --continue "$@"; }
+# 3. Wire up shell functions — source sh-aliases/ai from your shell rc
+#    (e.g. in ~/.zshrc):
+echo 'source ~/path/to/claude-code-harness/sh-aliases/ai' >> ~/.zshrc
+#    or, if you keep an aliases dir:
+cp sh-aliases/ai ~/.zsh-aliases/ai   # then ensure ~/.zsh-aliases/* is sourced
 
 # 4. Install deps (pyyaml) — a dedicated venv keeps it isolated
 python3 -m venv ~/.claude/.cc-venv
