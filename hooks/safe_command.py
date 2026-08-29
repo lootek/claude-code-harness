@@ -45,7 +45,8 @@ AUDIT_LOG = Path.home() / ".claude" / "hooks" / "safe_command_audit.jsonl"
 # (redirects, here-strings, fork-bomb literals) rather than argv structure.
 
 RAW_DENY: list[tuple[re.Pattern, str]] = [
-    (re.compile(r">\s*/dev/(r?disk|sd[a-z]|hd[a-z])", re.MULTILINE),
+    (re.compile(r">\s*/dev/(r?disk|sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d"
+                r"|md\d|md/|loop\d|dm-\d|mapper/)", re.MULTILINE),
      "write to raw disk device — no safe alternative"),
     (re.compile(r"(?:^|[\s;&|])(tee\s+(?:-a\s+)?)?>\s*/etc/(passwd|shadow|sudoers)\b"),
      "overwrite sensitive /etc file — no safe alternative"),
@@ -268,6 +269,59 @@ def strip_env_prefix(argv: list[str]) -> list[str]:
     return argv[i:] if i < len(argv) else argv
 
 
+_SUDO_CMDS = {"sudo", "doas"}
+_SUDO_OPTS_WITH_ARG = {"-u", "-g", "-p", "-C", "-U", "-T", "-R", "-h"}
+
+
+def strip_sudo_prefix(argv: list[str]) -> list[str]:
+    """`sudo -n dd of=/dev/sda` → `dd of=/dev/sda`, so the underlying command
+    is still inspected. (A bare local `sudo` is separately denied upstream.)"""
+    if not argv or _basename(argv[0]) not in _SUDO_CMDS:
+        return argv
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a in _SUDO_OPTS_WITH_ARG:
+            i += 2
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        break
+    return argv[i:] if i < len(argv) else argv
+
+
+# ssh flags that consume the following token, so the host isn't misidentified.
+_SSH_OPTS_WITH_ARG = {
+    "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l",
+    "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w",
+}
+
+
+def extract_ssh_remote(argv: list[str]) -> str | None:
+    """Return the remote command from `ssh [opts] host cmd...`, else None.
+
+    Without this, every destructive command sent to a remote box is invisible
+    to the hook, because argv[0] is `ssh`.
+    """
+    if not argv or _basename(argv[0]) not in ("ssh", "rsh"):
+        return None
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a in _SSH_OPTS_WITH_ARG:
+            i += 2
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        break  # argv[i] is the [user@]host
+    i += 1  # step past the host
+    if i >= len(argv):
+        return None  # interactive login, no remote command
+    return " ".join(argv[i:])
+
+
 def _basename(tok: str) -> str:
     """Resolve /bin/rm, /usr/bin/rm, "rm", 'rm', \\rm → rm."""
     t = tok.lstrip("\\")
@@ -343,19 +397,111 @@ def check_xargs_rm(argv: list[str]) -> str | None:
     return None
 
 
+# Block-device namespaces that must never be a write target. The original
+# pattern only knew sd*/hd*/disk*, which silently allowed SD cards (mmcblk*),
+# RAID arrays (md*), NVMe, LVM and loop devices.
+_BLOCK_DEV_RE = re.compile(
+    r"^/dev/("
+    r"r?disk\d+.*"                    # macOS: disk0, disk2s1, rdisk0
+    r"|(sd|hd|vd|xvd)[a-z]+\d*"       # sda, sda1, vdb, xvda1
+    r"|nvme\d+n\d+(p\d+)?"            # nvme0n1, nvme0n1p2
+    r"|mmcblk\d+(p\d+)?"              # mmcblk0, mmcblk0p2  ← SD cards
+    r"|md\d+(p\d+)?|md/.+"            # md125, md125p1      ← RAID arrays
+    r"|loop\d+(p\d+)?"
+    r"|dm-\d+|mapper/.+"              # LVM / device-mapper
+    r"|sr\d+|fd\d+"
+    r")$"
+)
+
+# /dev targets that are legitimate write destinations.
+_SAFE_DEV_WRITE = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"}
+
+# Whole-command destructive disk utilities (no read-only mode worth allowing).
+_DISK_DESTRUCTIVE_CMDS = {
+    "wipefs", "shred", "blkdiscard", "zerofree", "mkswap", "dban", "nwipe",
+}
+
+# Partition editors: destructive by default, but each has a read-only form
+# worth keeping usable (fdisk -l and friends are everyday diagnostics).
+_PART_TOOL_READONLY_FLAGS = {
+    "fdisk": {"-l", "--list", "-x"},
+    "sfdisk": {"-l", "--list", "-d", "--dump", "-s", "--show-size",
+               "-V", "--verify", "-J", "--json"},
+    "sgdisk": {"-p", "--print", "-i", "--info", "-v", "--verify"},
+    "gdisk": {"-l"},
+    "cgdisk": set(),
+    "cfdisk": set(),
+    "parted": {"-l", "--list", "print"},
+    "partx": {"-s", "--show", "-l", "--list"},
+}
+
+
+def _dev_write_target(path: str) -> str | None:
+    """Return a reason if `path` is an unsafe device write target."""
+    p = path.strip().strip("'\"")
+    if not p.startswith("/dev/"):
+        return None
+    if p in _SAFE_DEV_WRITE or p.startswith("/dev/fd/"):
+        return None
+    if _BLOCK_DEV_RE.match(p):
+        return f"block device {p}"
+    # Unknown /dev/* target — fail closed rather than guess.
+    return f"device {p}"
+
+
 def check_disk_tools(argv: list[str]) -> str | None:
     if not argv:
         return None
     cmd = _basename(argv[0])
+
     # mkfs.ext4, mkfs.xfs etc all count
-    if cmd == "mkfs" or cmd.startswith("mkfs.") or cmd in ("wipefs", "shred"):
-        return f"{cmd} — no safe alternative"
+    if cmd == "mkfs" or cmd.startswith("mkfs.") or cmd in _DISK_DESTRUCTIVE_CMDS:
+        return f"{cmd} — destructive disk operation; no safe alternative"
+
     if cmd == "dd":
         for a in argv[1:]:
             if re.match(r"if=/dev/(zero|urandom|random)\b", a):
                 return "dd with zero/random source — no safe alternative"
-            if re.match(r"of=/dev/(r?disk|sd[a-z]|hd[a-z])\d*\b", a):
-                return "dd targeting raw disk — no safe alternative"
+            if a.startswith("of="):
+                target = _dev_write_target(a[3:])
+                if target:
+                    return f"dd targeting {target} — no safe alternative"
+
+    if cmd in _PART_TOOL_READONLY_FLAGS:
+        ro = _PART_TOOL_READONLY_FLAGS[cmd]
+        if not any(a in ro for a in argv[1:]):
+            return f"{cmd} — partition table edit; no safe alternative"
+
+    if cmd == "mdadm":
+        destructive = {
+            "--zero-superblock", "--create", "-C", "--stop", "-S",
+            "--fail", "-f", "--remove", "-r", "--kill-subarray", "--force",
+        }
+        for a in argv[1:]:
+            if a in destructive:
+                return f"mdadm {a} — RAID-destructive; no safe alternative"
+
+    if cmd == "badblocks" and _has_flag(argv, "-w", "--write-mode"):
+        return "badblocks -w — destructive write test; no safe alternative"
+
+    if cmd == "hdparm":
+        for a in argv[1:]:
+            if a.startswith("--security-erase") or a in (
+                "--trim-sector-ranges", "--make-bad-sector", "--dco-restore"
+            ):
+                return f"hdparm {a} — destructive; no safe alternative"
+
+    if cmd == "nvme" and len(argv) > 1 and argv[1] in ("format", "sanitize"):
+        return f"nvme {argv[1]} — destructive; no safe alternative"
+
+    if cmd == "cryptsetup":
+        for a in argv[1:]:
+            if a in ("luksFormat", "erase", "luksErase"):
+                return f"cryptsetup {a} — destroys LUKS data; no safe alternative"
+
+    if cmd in ("pvcreate", "pvremove", "vgremove", "lvremove", "vgreduce"):
+        return f"{cmd} — LVM-destructive; no safe alternative"
+
     return None
 
 
@@ -1078,6 +1224,55 @@ ASK_PREDICATES = [
 #  Evaluator entrypoint
 # ────────────────────────────────────────────────────────────────────────────
 
+# Predicates applied to a command sent to a remote host over ssh. This is the
+# destructive-filesystem subset: the full local list would also deny things
+# like `sudo`, which is unavoidable (and fine) for remote administration.
+REMOTE_DENY_PREDICATES = [
+    check_rm,
+    check_find_delete,
+    check_xargs_rm,
+    check_disk_tools,
+    check_mv_cp_to_nullish,
+    check_truncate,
+    check_chmod_chown,
+    check_mkdir_root,
+]
+
+_MAX_SSH_DEPTH = 3
+
+
+def evaluate_remote(command: str, depth: int = 1) -> str | None:
+    """Evaluate a command destined for a remote host. Returns a deny reason."""
+    if depth > _MAX_SSH_DEPTH or not command:
+        return None
+    norm = normalize(command)
+
+    for pat, reason in RAW_DENY:
+        if pat.search(norm) and "/dev/" in pat.pattern:
+            return reason
+
+    for segment in split_segments(norm):
+        argv = tokenize(segment)
+        if not argv:
+            continue
+        for av in {
+            tuple(argv),
+            tuple(strip_env_prefix(argv)),
+            tuple(strip_sudo_prefix(strip_env_prefix(argv))),
+        }:
+            av_list = list(av)
+            for predicate in REMOTE_DENY_PREDICATES:
+                reason = predicate(av_list)
+                if reason:
+                    return reason
+            nested = extract_ssh_remote(av_list)
+            if nested:
+                reason = evaluate_remote(nested, depth + 1)
+                if reason:
+                    return reason
+    return None
+
+
 def evaluate(command: str) -> tuple[str, str]:
     """Return (decision, reason). decision in {'allow', 'deny', 'ask'}."""
     norm = normalize(command)
@@ -1095,9 +1290,19 @@ def evaluate(command: str) -> tuple[str, str]:
         stripped = strip_env_prefix(argv)
         if stripped is not argv and stripped != argv:
             argvs.append(stripped)
+        unsudoed = strip_sudo_prefix(stripped)
+        if unsudoed != stripped:
+            argvs.append(unsudoed)
 
         matched = False
         for av in argvs:
+            # Commands shipped to a remote host: inspect the payload, not `ssh`.
+            remote = extract_ssh_remote(av)
+            if remote:
+                reason = evaluate_remote(remote)
+                if reason:
+                    return "deny", f"remote command via ssh: {reason}"
+
             for predicate in DENY_PREDICATES:
                 reason = predicate(av)
                 if reason:
