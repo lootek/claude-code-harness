@@ -70,7 +70,19 @@ def list_model_ids(cfg):
     return [l for l in out.stdout.splitlines() if l.strip()]
 
 
-def apply_env(p, cfg):
+# Slots claude code fills with *Anthropic* model names (background title
+# generation, subagents, the opus/sonnet/haiku aliases). On a BYO provider
+# those names don't resolve, so a provider may pin them via `env:` — and they
+# must be cleared between providers like everything else.
+SLOT_VARS = (
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
+
+
+def apply_env(p, cfg, providers=None):
     # Clear ANTHROPIC_* + CLAUDE_CODE_MAX_OUTPUT_TOKENS so switching providers
     # doesn't leak env from a previous launch.
     #
@@ -80,8 +92,15 @@ def apply_env(p, cfg):
     # CLAUDE_CODE_MAX_CONTEXT_TOKENS is also read (NPc fallback) for non-
     # claude- model names, but the [1m] suffix is the cleaner lever. See
     # ~/.claude/providers.yaml for which models emit [1m] variants.
+    # The clear covers every key any provider can set, not just ANTHROPIC_*:
+    # otherwise a CLAUDE_CODE_* var declared by one provider (z.ai's
+    # DISABLE_NONESSENTIAL_TRAFFIC, or a slot var) survives into the next
+    # launch and silently points at a model the new provider doesn't serve.
+    volatile = {"CLAUDE_CODE_MAX_OUTPUT_TOKENS", *SLOT_VARS}
+    for pcfg in (providers or {}).values():
+        volatile.update((pcfg.get("env") or {}).keys())
     for k in list(os.environ):
-        if k.startswith("ANTHROPIC_") or k == "CLAUDE_CODE_MAX_OUTPUT_TOKENS":
+        if k.startswith("ANTHROPIC_") or k in volatile:
             del os.environ[k]
     if not cfg.get("native"):
         os.environ["ANTHROPIC_BASE_URL"] = cfg.get("base_url", "")
@@ -137,7 +156,7 @@ def main():
     if provider not in providers:
         sys.exit(f"unknown provider: {provider}")
     cfg = providers[provider]
-    apply_env(provider, cfg)
+    apply_env(provider, cfg, providers)
     if not model:
         model = fzf_pick(list_model_ids(cfg), f"{provider}> ")
         if not model:
