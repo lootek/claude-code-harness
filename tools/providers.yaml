@@ -185,3 +185,38 @@ providers:
                            | $id + ":" + .provider + "[1m]"))
             )[]
         ' 2>/dev/null
+
+  xai:
+    # xAI (Grok) — exposes an Anthropic-compatible /v1/messages alongside its
+    # OpenAI-style routes, so claude code talks to it directly.
+    # https://docs.x.ai/docs/api-reference   (key from https://console.x.ai)
+    #
+    # BILLING: an API key meters against pay-as-you-go API credits. A SuperGrok
+    # or X Premium+ subscription is a *consumer* entitlement on the
+    # accounts.x.ai OAuth surface — claude code has no xAI OAuth flow and can
+    # only present a bearer token, so the subscription does not pay for this.
+    # Confirmed against the live API: a valid key with no credits authenticates
+    # but every call (including /v1/models) returns
+    #   403 permission-denied "team doesn't have any credits or licenses yet"
+    # so the model picker stays empty until credits are bought at console.x.ai.
+    # A wrong key gives "Incorrect API key" instead — the two are easy to tell
+    # apart when debugging.
+    #
+    # Auth: verified against the live endpoint — both `Authorization: Bearer`
+    # and `x-api-key` are accepted, so ANTHROPIC_AUTH_TOKEN alone is enough and
+    # no api_key entry is needed here.
+    base_url: https://api.x.ai
+    auth_token: ~/.secrets/xai
+    max_output_tokens:
+    # Point claude code's opus/sonnet/haiku/subagent slots at the picked model;
+    # the Anthropic names they default to don't exist here.
+    route_slots_to_model: true
+    # No [1m] variants: unlike ollama/z.ai there is no confirmed 1M-context
+    # Grok model, and the suffix would claim a window the backend may not have.
+    # /v1/models needs the key, so the picker is empty without it — apply_env
+    # already fails loudly ("token file not found") before we get that far.
+    listcmd: |
+      curl -s https://api.x.ai/v1/models \
+        -H "Authorization: Bearer $(cat ~/.secrets/xai)" \
+      | jq -r '.data[].id' 2>/dev/null | sort
+
