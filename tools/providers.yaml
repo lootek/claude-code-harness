@@ -10,7 +10,21 @@
 #
 # auth_token: a literal (e.g. ollama) OR a path to a file holding only the
 #   token (e.g. ~/.secrets/openrouter). Paths start with ~ or /. The wrapper
-#   reads the file and strips whitespace.
+#   reads the file and strips whitespace, and exits with a clear message
+#   instead of a traceback if the file is missing.
+#
+# api_key: optional. Most gateways authenticate off ANTHROPIC_AUTH_TOKEN alone
+#   and want ANTHROPIC_API_KEY empty (the default). Set to "auth_token" to reuse
+#   the resolved auth_token, or give it its own literal/path/env: spec. The HF
+#   router documents setting both.
+#
+# route_slots_to_model: optional bool. claude code fills internal slots
+#   (ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL, CLAUDE_CODE_SUBAGENT_MODEL)
+#   with Anthropic model names that do not resolve on a BYO provider. Set true
+#   to point every slot at whatever model you picked — right when the catalogue
+#   is large and no single model is the obvious default. Pin them explicitly in
+#   `env:` instead when one model should always serve a slot (z.ai does this);
+#   explicit `env:` entries always win.
 #
 # env: optional map of extra env vars the wrapper exports for that provider
 #   (BYO providers like z.ai that need ANTHROPIC_DEFAULT_*_MODEL for claude
@@ -120,3 +134,54 @@ providers:
         -H "anthropic-version: 2023-06-01" \
       | jq -r '.data[].id' 2>/dev/null \
       | awk '{ print } /^glm-5\.[23]$/ { print $0 "[1m]" }'
+
+  huggingface:
+    # Hugging Face Inference Providers — an Anthropic-compatible router in front
+    # of ~100 open models across many inference backends.
+    # https://huggingface.co/docs/inference-providers/integrations/claude-code
+    #
+    # Token needs the "Make calls to Inference Providers" permission:
+    #   https://huggingface.co/settings/tokens/new?ownUserPermissions=inference.serverless.write&tokenType=fineGrained
+    # Store it like every other provider here:
+    #   printf '%s' hf_xxx > ~/.secrets/huggingface && chmod 600 ~/.secrets/huggingface
+    base_url: https://router.huggingface.co
+    auth_token: ~/.secrets/huggingface
+    # HF's docs export ANTHROPIC_API_KEY as well as ANTHROPIC_AUTH_TOKEN.
+    api_key: auth_token
+    max_output_tokens:
+    # No single model is the natural default here, so aim claude code's opus/
+    # sonnet/haiku/subagent slots at whatever you picked rather than hardcoding.
+    route_slots_to_model: true
+    # env:
+    #   # Bill inference to an org you belong to (Team/Enterprise only).
+    #   ANTHROPIC_CUSTOM_HEADERS: "X-HF-Bill-To: your-org-name"
+    #
+    # Model id format is owner/Model with an optional routing suffix:
+    #   owner/Model                 default :fastest policy (highest throughput,
+    #                               automatic failover)
+    #   owner/Model:cheapest        cheapest live provider
+    #   owner/Model:fireworks-ai    pinned provider, deterministic routing
+    # The catalogue is unauthenticated, so the picker works before you have a
+    # token. Only tool-capable live providers are listed — claude code is
+    # useless against a model that cannot call tools.
+    # [1m] variants (see the ollama note above) are emitted per pinned provider
+    # that reports >=1M context, and on the bare id only when *every* live
+    # provider clears 1M — otherwise dynamic routing could land you on a
+    # smaller context than the suffix claims.
+    listcmd: |
+      curl -s https://router.huggingface.co/v1/models \
+      | jq -r '
+          .data[]
+          | .id as $id
+          | [.providers[] | select(.status == "live" and .supports_tools)] as $ps
+          | select($ps | length > 0)
+          | (
+              [$id]
+              + (if ($ps | all(.context_length != null and .context_length >= 1000000))
+                 then [$id + "[1m]"] else [] end)
+              + [$id + ":cheapest"]
+              + ($ps | map($id + ":" + .provider))
+              + ($ps | map(select(.context_length != null and .context_length >= 1000000)
+                           | $id + ":" + .provider + "[1m]"))
+            )[]
+        ' 2>/dev/null

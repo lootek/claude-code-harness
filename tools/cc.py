@@ -70,16 +70,28 @@ def list_model_ids(cfg):
     return [l for l in out.stdout.splitlines() if l.strip()]
 
 
-# Slots claude code fills with *Anthropic* model names (background title
-# generation, subagents, the opus/sonnet/haiku aliases). On a BYO provider
-# those names don't resolve, so a provider may pin them via `env:` — and they
-# must be cleared between providers like everything else.
+# claude code fills several internal slots (background title generation, the
+# subagent model, and the opus/sonnet/haiku aliases) with *Anthropic* model
+# names. On a BYO provider those names don't resolve, so the calls fail. A
+# provider can either pin the slots itself via `env:` (z.ai does), or set
+# route_slots_to_model: true to aim every slot at whatever model was picked —
+# the right default when the catalogue is huge and no single model is special
+# (the HF router). Explicit `env:` entries always win.
 SLOT_VARS = (
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
 )
+
+
+def route_slots(cfg, model):
+    if not cfg.get("route_slots_to_model"):
+        return
+    declared = cfg.get("env") or {}
+    for var in SLOT_VARS:
+        if var not in declared:
+            os.environ[var] = model
 
 
 def apply_env(p, cfg, providers=None):
@@ -105,7 +117,16 @@ def apply_env(p, cfg, providers=None):
     if not cfg.get("native"):
         os.environ["ANTHROPIC_BASE_URL"] = cfg.get("base_url", "")
         os.environ["ANTHROPIC_AUTH_TOKEN"] = resolve_token(cfg.get("auth_token", ""))
-        os.environ["ANTHROPIC_API_KEY"] = ""
+        # Most gateways authenticate off ANTHROPIC_AUTH_TOKEN alone and want
+        # ANTHROPIC_API_KEY empty. Some (the HF router) document setting both,
+        # so a provider may declare api_key — same literal-or-path resolution
+        # as auth_token. "auth_token" is a shorthand for "reuse that value".
+        api_key = cfg.get("api_key", "")
+        if api_key == "auth_token":
+            api_key = os.environ["ANTHROPIC_AUTH_TOKEN"]
+        else:
+            api_key = resolve_token(api_key)
+        os.environ["ANTHROPIC_API_KEY"] = api_key
     mot = cfg.get("max_output_tokens")
     if mot:
         os.environ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(mot)
@@ -162,6 +183,7 @@ def main():
         if not model:
             sys.exit(130)
     os.environ["ANTHROPIC_MODEL"] = model
+    route_slots(cfg, model)
     args = rest if not resume else ["--continue", *rest]
     sys.stderr.write(f"→ provider={provider} model={model}\n")
     os.execvpe("claude", ["claude", "--model", model, *args], os.environ)
