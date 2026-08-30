@@ -44,8 +44,12 @@ def resolve_token(v):
     if not v:
         return ""
     if v.startswith("~") or v.startswith("/"):
-        with open(os.path.expanduser(v)) as f:
-            return f.read().strip()
+        path = os.path.expanduser(v)
+        try:
+            with open(path) as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            sys.exit(f"token file not found: {path}")
     return v
 
 
