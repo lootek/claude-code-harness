@@ -12,7 +12,7 @@ fzf-driven provider/model switching for [Claude Code](https://claude.com/claude-
 
 `cc.py` finds `providers.yaml` **next to itself** (`tools/providers.yaml`), falling back to `~/.claude/providers.yaml`.
 
-> **Note:** `safe_command.py`'s `CURL_POST_ALLOW_PREFIXES` (read-only API endpoints pre-approved for `curl` POST) is **empty by default** and populated from the `CC_CURL_POST_ALLOW` env var (one URL prefix per line). No endpoints ship built-in. The `review-board` plugin ships 18 reviewer subagents; a few additional personas are kept in a private config and not published here. The `tech-doc-assist` plugin is likewise withheld (private/personal config).
+> **Note:** `safe_command.py`'s `CURL_POST_ALLOW_PREFIXES` (read-only API endpoints pre-approved for `curl` POST) is **empty by default**. No endpoints ship built-in. It is populated from two unioned sources: the `CC_CURL_POST_ALLOW` env var, and a gitignored `.curl-post-allow.local` beside the hook (override the path with `CC_CURL_POST_ALLOW_FILE`) — one URL prefix per line, `#` starts a comment. Same arrangement as `populate.sh`'s `.leak-patterns.local`. The `review-board` plugin ships 18 reviewer subagents; a few additional personas are kept in a private config and not published here. The `tech-doc-assist` plugin is likewise withheld (private/personal config).
 
 ## Install
 

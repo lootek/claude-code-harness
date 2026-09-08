@@ -2,8 +2,8 @@
 """
 Claude Code PreToolUse hook: gates destructive / exfil-prone shell commands.
 
-Version:         2.1.0
-Last reviewed:   2026-07-09
+Version:         2.3.0
+Last reviewed:   2026-09-08
 Threat model:    LLM with ambient Bedrock/Vault/AWS/GitLab credentials,
                  broad Bash(bash:*), Bash(python3:*), Bash(aws:*), Bash(*CLI:*)
                  wildcards, and Edit/Write(~/**) — this hook is the last
@@ -867,6 +867,38 @@ def _gh_api_method(argv: list[str]) -> str | None:
     return "POST" if has_field else "GET"
 
 
+# `gh api` / `glab api` flags that consume the following token, so it is not
+# the endpoint.
+_API_VALUE_FLAGS = {
+    "-X", "--method", "-f", "--field", "-F", "--raw-field", "--input",
+    "-H", "--header", "--hostname",
+}
+
+# Merge-request comments and review threads: post a note, edit a note, resolve
+# a discussion. Same blast radius as `glab mr create`, already pre-approved.
+_MR_NOTE_ENDPOINT_RE = re.compile(
+    r"^/?(api/v4/)?projects/[^/]+/merge_requests/\d+/"
+    r"(notes(/\d+)?|discussions(/[^/]+(/notes(/\d+)?)?)?)/?$"
+)
+
+
+def _api_endpoint(tail: list[str]) -> str:
+    """First positional arg of `gh api` / `glab api` — the endpoint path."""
+    i = 0
+    while i < len(tail):
+        tok = tail[i]
+        if tok.startswith("-"):
+            i += 2 if tok in _API_VALUE_FLAGS else 1
+            continue
+        return tok
+    return ""
+
+
+def _is_mr_note_endpoint(tail: list[str]) -> bool:
+    endpoint = _api_endpoint(tail).split("?", 1)[0]
+    return bool(_MR_NOTE_ENDPOINT_RE.match(endpoint))
+
+
 def check_gh_glab_deny(argv: list[str]) -> str | None:
     """Catastrophic gh/glab ops: repo delete, and flipping a repo to public."""
     if not argv:
@@ -1004,13 +1036,39 @@ def _find_url(argv: list[str]) -> str:
 
 # Read-only API endpoints that are safe to POST to without a prompt
 # (search/jql, wiki search, etc. — the POST body carries a query, not a
-# mutation). Add your own via the CC_CURL_POST_ALLOW env var (one URL prefix
-# per line); no endpoints ship built-in so nothing internal leaks by default.
+# mutation). No endpoints ship built-in so nothing internal leaks by default.
+# Two sources, unioned: the CC_CURL_POST_ALLOW env var and a gitignored file
+# beside this hook — `.curl-post-allow.local`, overridable with
+# CC_CURL_POST_ALLOW_FILE. One URL prefix per line, `#` starts a comment.
+# Same arrangement as populate.sh's .leak-patterns.local: site-specific values
+# stay out of this repo, and out of settings.json — which local credential
+# tooling may rewrite wholesale, taking anything parked there with it.
 # Matched as a prefix against the curl URL.
-CURL_POST_ALLOW_PREFIXES: tuple[str, ...] = tuple(
-    s.strip() for s in os.environ.get("CC_CURL_POST_ALLOW", "").splitlines()
-    if s.strip()
+CURL_POST_ALLOW_FILE = Path(
+    os.environ.get("CC_CURL_POST_ALLOW_FILE")
+    or Path(__file__).resolve().parent / ".curl-post-allow.local"
 )
+
+
+def _load_curl_post_allow() -> tuple[str, ...]:
+    blobs = [os.environ.get("CC_CURL_POST_ALLOW", "")]
+    try:
+        blobs.append(CURL_POST_ALLOW_FILE.read_text())
+    except OSError:
+        pass  # no local file — env var only, or nothing at all
+    prefixes: list[str] = []
+    for blob in blobs:
+        for line in blob.splitlines():
+            # Only a leading `#` is a comment: a URL may legitimately carry a
+            # fragment, and truncating it would silently widen the prefix.
+            line = line.strip()
+            if not line or line.startswith("#") or line in prefixes:
+                continue
+            prefixes.append(line)
+    return tuple(prefixes)
+
+
+CURL_POST_ALLOW_PREFIXES: tuple[str, ...] = _load_curl_post_allow()
 
 
 def ask_curl(argv: list[str]) -> str | None:
@@ -1161,6 +1219,9 @@ def ask_gh_glab(argv: list[str]) -> str | None:
     if grp == "api":
         method = _gh_api_method(tail[1:])
         if method in ("POST", "PUT", "PATCH", "DELETE"):
+            if (cmd == "glab" and method in ("POST", "PUT")
+                    and _is_mr_note_endpoint(tail[1:])):
+                return None  # MR notes / thread resolve — pre-approved below
             return f"{cmd} api {method} — mutating API call; confirm endpoint"
         return None
 
@@ -1198,6 +1259,98 @@ def ask_acli(argv: list[str]) -> str | None:
         if a in mutating:
             return f"acli {' '.join(argv[1:])[:80]} — mutating Atlassian op; confirm"
     return None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Argv predicates — explicit ALLOW layer
+#
+#  An explicit "allow" emitted by this PreToolUse hook is authoritative: it
+#  short-circuits both this hook's own ASK layer AND the downstream auto-mode
+#  classifier (which otherwise prompts on outward-facing ops like `git push`
+#  and `glab mr create`). It runs AFTER the DENY layer, so destructive forms
+#  (git push --force/--force-with-lease/--mirror, etc.) are already blocked and
+#  never reach here. Keep this list tight — only genuinely pre-approved verbs.
+# ────────────────────────────────────────────────────────────────────────────
+
+def allow_git_glab_mr(argv: list[str]) -> str | None:
+    if not argv:
+        return None
+    cmd = _basename(argv[0])
+    if cmd == "git":
+        # Destructive push forms are caught by check_git_destructive (DENY)
+        # before we get here, so any git push reaching this point is safe.
+        if len(argv) > 1 and argv[1] == "push":
+            return "git push (non-destructive) — pre-approved"
+    if cmd == "glab":
+        tail = argv[1:]
+        if tail[:2] == ["mr", "create"] or tail[:2] == ["mr", "update"]:
+            return f"glab mr {tail[1]} — pre-approved"
+    return None
+
+
+def allow_glab_mr_note_api(argv: list[str]) -> str | None:
+    """`glab api` against MR notes / review threads: post a comment, edit one,
+    resolve a thread. DELETE and every other endpoint stay in the ASK layer."""
+    if not argv or _basename(argv[0]) != "glab":
+        return None
+    tail = argv[1:]
+    if tail[:1] != ["api"]:
+        return None
+    method = _gh_api_method(tail[1:])
+    if method not in ("POST", "PUT") or not _is_mr_note_endpoint(tail[1:]):
+        return None
+    return f"glab api {method} merge-request note — pre-approved"
+
+
+ALLOW_PREDICATES = [
+    allow_git_glab_mr,
+    allow_glab_mr_note_api,
+]
+
+
+# Commands with no blast radius of their own: navigation, output, read-only
+# text filters. They never earn an explicit allow by themselves — they only
+# avoid vetoing one that a pre-approved verb in the same command has earned.
+NEUTRAL_CMDS = {
+    "cd", "pushd", "popd", "pwd", "ls", "echo", "printf", "true", "false",
+    "date", "jq", "yq", "grep", "egrep", "fgrep", "rg", "cut", "tr", "sort",
+    "uniq", "wc", "head", "tail", "column",
+}
+
+_REDIR_RE = re.compile(r"^(\d*|&)>>?(.*)$")
+
+
+def _redirects_to_file(argv: list[str]) -> bool:
+    """True when a segment writes output anywhere but /dev/null. Unknown `>`
+    shapes count as a write — the safe direction, since a false positive only
+    costs the segment its neutral status."""
+    for i, tok in enumerate(argv):
+        m = _REDIR_RE.match(tok)
+        if not m:
+            if ">" in tok:
+                return True
+            continue
+        target = m.group(2) or (argv[i + 1] if i + 1 < len(argv) else "")
+        # `2>&1` survives segmentation as a trailing `2>` plus a bare `1`.
+        if target in ("", "/dev/null") or target.lstrip("&").isdigit():
+            continue
+        return True
+    return False
+
+
+def _is_neutral_segment(argv: list[str]) -> bool:
+    if not argv:
+        return True
+    if len(argv) == 1 and (argv[0].isdigit() or _REDIR_RE.match(argv[0])):
+        return True
+    if _redirects_to_file(argv):
+        return False
+    cmd = _basename(argv[0])
+    if cmd in NEUTRAL_CMDS:
+        return True
+    if cmd in ("gh", "glab"):
+        return ask_gh_glab(argv) is None
+    return False
 
 
 ASK_PREDICATES = [
@@ -1274,7 +1427,26 @@ def evaluate_remote(command: str, depth: int = 1) -> str | None:
 
 
 def evaluate(command: str) -> tuple[str, str]:
-    """Return (decision, reason). decision in {'allow', 'deny', 'ask'}."""
+    """Return (decision, reason).
+    decision in {'allow', 'allow-explicit', 'deny', 'ask'}.
+
+    Precedence, evaluated over ALL segments of the command:
+      1. Any DENY match anywhere  → deny (catastrophic; wins outright).
+      2. Any ASK match anywhere   → ask  (unless step 3 explicitly clears it).
+      3. Explicit ALLOW: emitted only when at least one segment is pre-approved
+         and every other segment is neutral (navigation, output, read-only
+         filters — see _is_neutral_segment). That stops a compound like
+         `glab mr create && curl …` from riding the allow past the ASK that its
+         second segment would otherwise raise, while still clearing the
+         `cd repo && <pre-approved> | jq` shape that real commands take.
+      4. Otherwise                → allow (silent default; no prompt anyway).
+
+    The distinction between step 3 (explicit allow) and step 4 (implicit
+    allow) matters downstream: an explicit hook allow also suppresses the
+    auto-mode classifier prompt, whereas the silent default leaves that
+    prompt in place. So we only emit explicit-allow for the tight,
+    intentionally pre-approved verb set in ALLOW_PREDICATES.
+    """
     norm = normalize(command)
 
     # Raw-text DENY patterns first (redirects, pipe-to-shell, fork bombs).
@@ -1282,10 +1454,16 @@ def evaluate(command: str) -> tuple[str, str]:
         if pat.search(norm):
             return "deny", reason
 
+    ask_hit: str | None = None
+    explicit_hit = False
+    all_segments_ok = True
+    saw_segment = False
+
     for segment in split_segments(norm):
         argv = tokenize(segment)
         if not argv:
             continue
+        saw_segment = True
         argvs = [argv]
         stripped = strip_env_prefix(argv)
         if stripped is not argv and stripped != argv:
@@ -1294,7 +1472,7 @@ def evaluate(command: str) -> tuple[str, str]:
         if unsudoed != stripped:
             argvs.append(unsudoed)
 
-        matched = False
+        # DENY wins immediately, anywhere in the command.
         for av in argvs:
             # Commands shipped to a remote host: inspect the payload, not `ssh`.
             remote = extract_ssh_remote(av)
@@ -1308,12 +1486,36 @@ def evaluate(command: str) -> tuple[str, str]:
                 if reason:
                     return "deny", reason
 
+        # Record the first ASK, but keep scanning so a later DENY still wins.
+        if ask_hit is None:
+            for av in argvs:
+                for predicate in ASK_PREDICATES:
+                    reason = predicate(av)
+                    if reason:
+                        ask_hit = reason
+                        break
+                if ask_hit is not None:
+                    break
+
+        # Track explicit-allow: one pre-approved segment, the rest neutral.
+        seg_allowed = False
         for av in argvs:
-            for predicate in ASK_PREDICATES:
-                reason = predicate(av)
-                if reason:
-                    return "ask", reason
-        _ = matched
+            for predicate in ALLOW_PREDICATES:
+                if predicate(av):
+                    seg_allowed = True
+                    break
+            if seg_allowed:
+                break
+        if seg_allowed:
+            explicit_hit = True
+        elif not any(_is_neutral_segment(av) for av in argvs):
+            all_segments_ok = False
+
+    if saw_segment and explicit_hit and all_segments_ok:
+        return "allow-explicit", "pre-approved command"
+
+    if ask_hit is not None:
+        return "ask", ask_hit
 
     return "allow", ""
 
@@ -1338,6 +1540,11 @@ def main() -> None:
             deny(reason, command=command, session_id=session_id)
         elif decision == "ask":
             ask(reason, command=command, session_id=session_id)
+        elif decision == "allow-explicit":
+            # Authoritative allow: suppresses this hook's ASK layer *and* the
+            # downstream auto-mode classifier prompt for the pre-approved set.
+            _audit("allow", reason, command, session_id)
+            _emit("allow", reason)
         else:
             sys.exit(0)
 
