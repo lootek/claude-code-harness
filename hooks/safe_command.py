@@ -2,8 +2,8 @@
 """
 Claude Code PreToolUse hook: gates destructive / exfil-prone shell commands.
 
-Version:         2.3.0
-Last reviewed:   2026-09-08
+Version:         2.4.0
+Last reviewed:   2026-09-09
 Threat model:    LLM with ambient Bedrock/Vault/AWS/GitLab credentials,
                  broad Bash(bash:*), Bash(python3:*), Bash(aws:*), Bash(*CLI:*)
                  wildcards, and Edit/Write(~/**) — this hook is the last
@@ -20,9 +20,12 @@ Evaluator:
   3. For each segment, shlex.split (posix) the raw text. On ValueError,
      fall back to a whitespace split so a single unparseable segment
      cannot short-circuit the others.
-  4. Apply DENY rules (catastrophic). First match → deny.
-  5. Apply ASK rules (legitimate-but-risky). First match → ask.
-  6. Otherwise allow.
+  4. Apply DENY rules (catastrophic). Any match → deny.
+  5. Apply ASK rules (legitimate-but-risky). First match → ask, unless 6
+     clears it.
+  6. Explicit ALLOW for a tight pre-approved verb set, but only when every
+     other segment of the command is neutral (see ALLOW_PREDICATES).
+  7. Otherwise allow silently.
 
 Fail-closed: any uncaught exception → deny("hook internal error").
 Audit log:   ~/.claude/hooks/safe_command_audit.jsonl  (append-only JSONL).
@@ -881,6 +884,21 @@ _MR_NOTE_ENDPOINT_RE = re.compile(
     r"(notes(/\d+)?|discussions(/[^/]+(/notes(/\d+)?)?)?)/?$"
 )
 
+# The raw-API equivalents of `glab mr create` and `glab mr update`, which are
+# already pre-approved as subcommands. Doing the same thing through `glab api`
+# used to prompt while the subcommand did not — an asymmetry with no security
+# meaning, since the blast radius is identical.
+#   POST projects/X/merge_requests        → create
+#   PUT  projects/X/merge_requests/<iid>  → update (title, description, assignee)
+# Both are anchored with `$` so ACTION subpaths never match: /merge, /approve,
+# /rebase, /close stay in the ASK layer, matching `glab mr merge` and friends.
+_MR_CREATE_ENDPOINT_RE = re.compile(
+    r"^/?(api/v4/)?projects/[^/]+/merge_requests/?$"
+)
+_MR_UPDATE_ENDPOINT_RE = re.compile(
+    r"^/?(api/v4/)?projects/[^/]+/merge_requests/\d+/?$"
+)
+
 
 def _api_endpoint(tail: list[str]) -> str:
     """First positional arg of `gh api` / `glab api` — the endpoint path."""
@@ -894,9 +912,17 @@ def _api_endpoint(tail: list[str]) -> str:
     return ""
 
 
-def _is_mr_note_endpoint(tail: list[str]) -> bool:
+def _is_mr_write_endpoint(tail: list[str], method: str | None) -> bool:
+    """True for the MR writes that `glab mr create/update` already pre-approve:
+    creating an MR, updating one, and posting/editing notes and discussions."""
+    if method not in ("POST", "PUT"):
+        return False
     endpoint = _api_endpoint(tail).split("?", 1)[0]
-    return bool(_MR_NOTE_ENDPOINT_RE.match(endpoint))
+    if _MR_NOTE_ENDPOINT_RE.match(endpoint):
+        return True
+    if method == "POST":
+        return bool(_MR_CREATE_ENDPOINT_RE.match(endpoint))
+    return bool(_MR_UPDATE_ENDPOINT_RE.match(endpoint))
 
 
 def check_gh_glab_deny(argv: list[str]) -> str | None:
@@ -1219,9 +1245,8 @@ def ask_gh_glab(argv: list[str]) -> str | None:
     if grp == "api":
         method = _gh_api_method(tail[1:])
         if method in ("POST", "PUT", "PATCH", "DELETE"):
-            if (cmd == "glab" and method in ("POST", "PUT")
-                    and _is_mr_note_endpoint(tail[1:])):
-                return None  # MR notes / thread resolve — pre-approved below
+            if cmd == "glab" and _is_mr_write_endpoint(tail[1:], method):
+                return None  # MR create/update/notes — pre-approved below
             return f"{cmd} api {method} — mutating API call; confirm endpoint"
         return None
 
@@ -1288,23 +1313,24 @@ def allow_git_glab_mr(argv: list[str]) -> str | None:
     return None
 
 
-def allow_glab_mr_note_api(argv: list[str]) -> str | None:
-    """`glab api` against MR notes / review threads: post a comment, edit one,
-    resolve a thread. DELETE and every other endpoint stay in the ASK layer."""
+def allow_glab_mr_api(argv: list[str]) -> str | None:
+    """`glab api` doing what `glab mr create/update` already do: create an MR,
+    update one, post or edit a note, resolve a thread. DELETE, action subpaths
+    (/merge, /approve, /rebase) and every other endpoint stay in the ASK layer."""
     if not argv or _basename(argv[0]) != "glab":
         return None
     tail = argv[1:]
     if tail[:1] != ["api"]:
         return None
     method = _gh_api_method(tail[1:])
-    if method not in ("POST", "PUT") or not _is_mr_note_endpoint(tail[1:]):
+    if not _is_mr_write_endpoint(tail[1:], method):
         return None
-    return f"glab api {method} merge-request note — pre-approved"
+    return f"glab api {method} merge-request write — pre-approved"
 
 
 ALLOW_PREDICATES = [
     allow_git_glab_mr,
-    allow_glab_mr_note_api,
+    allow_glab_mr_api,
 ]
 
 

