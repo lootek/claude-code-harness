@@ -1269,20 +1269,35 @@ def ask_gh_glab(argv: list[str]) -> str | None:
     return None
 
 
+# acli grammar is `acli <product> <noun…> <verb> [flags]`. These nouns share a
+# name with a mutating verb but only group subcommands — `comment list` is a
+# read, `comment create` is a write — so the verb that follows them decides.
+ACLI_NOUN_GROUPS = {"comment", "link", "attachment", "watcher"}
+ACLI_READONLY_VERBS = {
+    "list", "view", "search", "get", "show", "status",
+    "visibility", "type", "list-watchers",
+}
+
+
 def ask_acli(argv: list[str]) -> str | None:
     """Atlassian acli (jira/confluence): prompt on mutating subcommands."""
     if not argv or _basename(argv[0]) != "acli":
         return None
     mutating = {
         "create", "update", "edit", "delete", "remove", "assign",
-        "transition", "comment", "add", "set", "move", "clone", "link",
+        "transition", "add", "set", "move", "clone",
         "archive", "publish", "upload", "import",
     }
-    for a in argv[1:]:
-        if a.startswith("-"):
-            continue
+    reason = f"acli {' '.join(argv[1:])[:80]} — mutating Atlassian op; confirm"
+    positional = [a for a in argv[1:] if not a.startswith("-")]
+    for i, a in enumerate(positional):
+        if a in ACLI_NOUN_GROUPS:
+            nxt = positional[i + 1] if i + 1 < len(positional) else ""
+            if nxt in ACLI_READONLY_VERBS:
+                continue
+            return reason  # bare group, or a verb we do not know to be a read
         if a in mutating:
-            return f"acli {' '.join(argv[1:])[:80]} — mutating Atlassian op; confirm"
+            return reason
     return None
 
 
