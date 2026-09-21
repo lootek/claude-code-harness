@@ -113,15 +113,26 @@ skip "~/.secrets/ (tokens — never in a repo)"
 # ── hook test suites: never publish a broken safe_command.py or guard ─────
 if ! $DRY_RUN; then
   say "hook tests (tests/)"
-  PY="$LIVE_CLAUDE/.cc-venv/bin/python"
-  if [[ -x "$PY" ]] && "$PY" -c 'import pytest' 2>/dev/null; then
+  # Any interpreter that has pytest will do. The venv is only present on the
+  # host that uses the ccc wrapper; keying the gate to it alone meant this
+  # check silently skipped on every run on the other host, which makes "never
+  # publish a broken hook" a claim rather than a check.
+  PY=""
+  for cand in "$LIVE_CLAUDE/.cc-venv/bin/python" "$(command -v python3 || true)" \
+              "$(command -v python || true)"; do
+    if [[ -n "$cand" && -x "$cand" ]] && "$cand" -c 'import pytest' >/dev/null 2>&1; then
+      PY="$cand"; break
+    fi
+  done
+  if [[ -n "$PY" ]]; then
+    printf '    --   using %s\n' "$PY"
     if ( cd "$REPO/hooks" && "$PY" -m pytest -q -p no:cacheprovider tests/ 2>&1 | tail -3 | sed 's/^/    /' ; exit "${PIPESTATUS[0]}" ); then
       printf '    ok   hook tests pass\n'
     else
       die "hook tests FAILED against the captured files — do not commit"
     fi
   else
-    skip "pytest not in $LIVE_CLAUDE/.cc-venv — run the suite manually before pushing"
+    skip "no interpreter with pytest (tried .cc-venv, python3, python) — run the suite manually before pushing"
   fi
 fi
 
