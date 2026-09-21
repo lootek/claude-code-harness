@@ -2,7 +2,7 @@
 """
 Claude Code PreToolUse hook: gates destructive / exfil-prone shell commands.
 
-Version:         2.5.1
+Version:         2.6.0
 Last reviewed:   2026-09-21
 Threat model:    LLM with ambient Bedrock/Vault/AWS/GitLab credentials,
                  broad Bash(bash:*), Bash(python3:*), Bash(aws:*), Bash(*CLI:*)
@@ -1338,7 +1338,12 @@ def allow_git_glab_mr(argv: list[str]) -> str | None:
             return "git push (non-destructive) — pre-approved"
     if cmd == "glab":
         tail = argv[1:]
-        if tail[:2] == ["mr", "create"] or tail[:2] == ["mr", "update"]:
+        # `mr note` is the CLI spelling of the pre-approved API call
+        # (POST …/merge_requests/<iid>/notes, see allow_glab_mr_api). Without it
+        # the two spellings of one action behaved differently: the API form was
+        # authoritative-allow, while the CLI form fell through to the silent
+        # default and still met the auto-mode classifier.
+        if tail[:2] in (["mr", "create"], ["mr", "update"], ["mr", "note"]):
             return f"glab mr {tail[1]} — pre-approved"
     return None
 

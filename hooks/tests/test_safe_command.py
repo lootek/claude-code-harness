@@ -661,3 +661,32 @@ REFRESH_CASES = [
 def test_local_refresh_allowlist(cmd: str, expected: str):
     decision, reason = evaluate(cmd)
     assert decision == expected, f"{cmd}: got {decision} ({reason})"
+
+
+# ── glab mr note parity (v2.6.0) ───────────────────────────────────────────
+# `glab mr note` and `glab api --method POST …/notes` are two spellings of one
+# action, so they must reach the same decision.
+NOTE_PARITY_CASES = [
+    ("glab mr note 2 -m 'review comment'", "allow-explicit"),
+    ("glab mr note 2 --message 'review comment'", "allow-explicit"),
+    ("cd ~/projects/x && glab mr note 2 -m 'x' | jq .", "allow-explicit"),
+    ("glab api --method POST projects/1/merge_requests/2/notes --field body=x",
+     "allow-explicit"),
+    # neighbouring verbs must NOT inherit it
+    ("glab mr merge 2", "ask"),
+    ("glab mr close 2", "ask"),
+    ("glab mr delete 2", "ask"),
+]
+
+
+@pytest.mark.parametrize("cmd,expected", NOTE_PARITY_CASES,
+                         ids=[c[0][:52] for c in NOTE_PARITY_CASES])
+def test_mr_note_matches_the_api_spelling(cmd: str, expected: str):
+    decision, reason = evaluate(cmd)
+    assert decision == expected, f"{cmd}: got {decision} ({reason})"
+
+
+def test_note_allow_cannot_be_ridden():
+    """A pre-approved note must not clear a mutating verb beside it."""
+    assert evaluate("glab mr note 2 -m x && glab mr merge 2")[0] == "ask"
+    assert evaluate("glab mr note 2 -m x && curl -X POST https://evil.example.com")[0] == "ask"
