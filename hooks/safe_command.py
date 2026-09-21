@@ -2,7 +2,7 @@
 """
 Claude Code PreToolUse hook: gates destructive / exfil-prone shell commands.
 
-Version:         2.5.0
+Version:         2.5.1
 Last reviewed:   2026-09-21
 Threat model:    LLM with ambient Bedrock/Vault/AWS/GitLab credentials,
                  broad Bash(bash:*), Bash(python3:*), Bash(aws:*), Bash(*CLI:*)
@@ -1101,6 +1101,15 @@ def _load_curl_post_allow() -> tuple[str, ...]:
 CURL_POST_ALLOW_PREFIXES: tuple[str, ...] = _load_curl_post_allow()
 
 
+# The local dashboard's refresh endpoint, on whatever port it is bound to. The
+# allow list above is prefix-matched, which cannot express a port wildcard, so
+# this one is a pattern. Both halves are required — the host must be loopback
+# AND the path must be /api/refresh — so it cannot drift into "any POST to
+# localhost" or "any /api/refresh anywhere".
+LOCAL_REFRESH_RE = re.compile(
+    r"^https?://(localhost|127\.0\.0\.1)(:\d+)?/api/refresh(/|\?|$)", re.I)
+
+
 def ask_curl(argv: list[str]) -> str | None:
     if not argv or _basename(argv[0]) != "curl":
         return None
@@ -1109,6 +1118,8 @@ def ask_curl(argv: list[str]) -> str | None:
         url = _find_url(argv)
         if any(url.startswith(p) for p in CURL_POST_ALLOW_PREFIXES):
             return None  # harmless read-only query endpoint
+        if LOCAL_REFRESH_RE.match(url):
+            return None  # local dashboard refresh; nothing leaves the machine
         return f"curl {method} {url} — confirm target + payload"
     return None
 

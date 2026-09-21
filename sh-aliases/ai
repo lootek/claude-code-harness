@@ -1,22 +1,180 @@
-# sh-aliases/ai — fzf-driven claude code provider/model picker
-#
-# Source from your shell rc, e.g. in ~/.zshrc:
-#   [ -f ~/path/to/claude-code-harness/sh-aliases/ai ] && source ~/path/to/...
-# or copy to ~/.zsh-aliases/ai if you keep an aliases dir.
-#
-#   ccc [claude-args...]        fresh session
-#   ccr [claude-args...]        resume most-recent session (--continue)
-#   ccc --provider P --model M  skip the fzf pickers
-#   ccprov                      print active ANTHROPIC_*/MAX_OUTPUT env
-#
-# Config:  ~/.claude/tools/providers.yaml  (co-located with the wrapper;
-#           cc.py falls back to ~/.claude/providers.yaml)
-# Wrapper: ~/.claude/tools/cc.py
-# Venv:    ~/.claude/.cc-venv       (pyyaml; see README install steps)
+#alias ccl='claude-login > ~/.claude-session'
+#alias ccc='eval $(cat ~/.claude-session) && claude'
 
-CCC_PY=~/.claude/.cc-venv/bin/python
-CCC_WRAPPER=~/.claude/tools/cc.py
+# Provider is picked per session, not globally. Default is Bedrock, straight out
+# of ~/.claude/settings.json. Any other provider is a settings overlay in
+# ~/.claude/providers/<name>.json, which `--settings` merges key-by-key on top —
+# so permissions, hooks, OTel, plugins, MCP servers and session history are all
+# still shared, and nothing here writes settings.json, so `ai` can't clobber it.
+# Two sessions on two providers can run side by side.
+#
+#   ccc                       Bedrock
+#   ccc --provider anthropic  employer subscription (first-party OAuth)
+#   ccc --provider            pick from a list
+#   ccr --provider            same, resuming
+#
+# Long form only, on purpose: -p is Claude Code's own --print, so claiming it
+# would break both `ccc -p 'summarise this'` and `cat file | ccc -p`.
+#
+# ccc/ccr used to be aliases. zsh expands aliases before it parses a function
+# definition, so in a shell that still has the old ones, sourcing this file dies
+# with "defining function based on alias" and leaves ccc unusable.
+unalias ccc ccr 2>/dev/null
 
-ccc()    { "$CCC_PY" "$CCC_WRAPPER" "$@"; }
-ccr()    { "$CCC_PY" "$CCC_WRAPPER" --continue "$@"; }
-ccprov() { env | grep -E '^(ANTHROPIC|CLAUDE_CODE_MAX_OUTPUT)' | sort; }
+_ccc_providers() { print -l bedrock $HOME/.claude/providers/*.json(N:t:r) }
+
+ccc() {
+  local overlay="" name=""
+  if [[ $1 == --provider ]]; then
+    # A value must not look like a flag, so `ccc --provider --resume` still picks.
+    if [[ -n $2 && $2 != -* ]]; then
+      name=$2
+      shift 2
+    elif [[ -t 2 ]]; then
+      name=$(_ccc_providers | fzf-tmux --prompt='claude provider> ') || return 1
+      [[ -n $name ]] || return 1
+      shift 1
+    else
+      # No terminal to draw on: fzf would sit on /dev/tty forever.
+      print -u2 "ccc: --provider needs an explicit value when non-interactive. available: $(_ccc_providers | tr '\n' ' ')"
+      return 1
+    fi
+    if [[ $name != bedrock ]]; then
+      overlay="$HOME/.claude/providers/$name.json"
+      if [[ ! -f $overlay ]]; then
+        print -u2 "ccc: unknown provider '$name'. available: $(_ccc_providers | tr '\n' ' ')"
+        return 1
+      fi
+    fi
+  fi
+  if [[ -n $overlay ]]; then
+    claude --settings "$overlay" "$@"
+  else
+    claude "$@"
+  fi
+}
+
+ccr() { ccc "$@" --resume }
+
+# Re-apply my manual ~/.claude/settings.json tweaks that `dev-login update`
+# tends to revert. Idempotent: a no-op if everything already matches.
+#   - append "[1m]" (1M-context) to every Opus 4.7/4.8 model ARN
+#   - CLAUDE_CODE_AUTO_COMPACT_WINDOW = 850000
+#   - CLAUDE_CODE_MAX_OUTPUT_TOKENS   = 65536
+_claude_reapply_settings() {
+  local f="$HOME/.claude/settings.json"
+  [[ -f "$f" ]] || { echo "claude settings: $f not found, skipping" >&2; return 0; }
+  CLAUDE_SETTINGS="$f" python3 - <<'PY'
+import json, os, re, sys, tempfile
+
+f = os.environ["CLAUDE_SETTINGS"]
+with open(f) as fh:
+    data = json.load(fh)
+
+changed = False
+
+# Identify Opus entries by the "opus" token in the KEY (env var name or
+# modelOverrides model id), never by a specific model ARN — so this keeps
+# working across Opus revisions. Ensure exactly one trailing "[1m]" on the
+# value (a "...-inference-profile/<id>" ARN).
+def is_opus_key(k):
+    return "opus" in k.lower() or "sonnet" in k.lower()
+
+# Only an inference-profile ARN is a model value to suffix; sibling env keys
+# like ANTHROPIC_DEFAULT_OPUS_MODEL_NAME / _DESCRIPTION / _CAPABILITIES also
+# contain "opus" but must be left untouched.
+def with_1m(v):
+    if not isinstance(v, str) or "inference-profile/" not in v:
+        return v
+    base = re.sub(r"(?:\[1m\])+$", "", v)  # strip any existing suffix(es)
+    return base + "[1m]"
+
+env = data.get("env")
+if isinstance(env, dict):
+    for k, v in list(env.items()):
+        if is_opus_key(k):
+            nv = with_1m(v)
+            if nv != v:
+                env[k] = nv; changed = True
+    if env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW") != "850000":
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "850000"; changed = True
+    if env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") != "65536":
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "65536"; changed = True
+
+mo = data.get("modelOverrides")
+if isinstance(mo, dict):
+    for k, v in list(mo.items()):
+        if is_opus_key(k):
+            nv = with_1m(v)
+            if nv != v:
+                mo[k] = nv; changed = True
+
+# Top-level "model" is a bare ARN, so is_opus_key() can't classify it by name.
+# Only suffix it when it matches an Opus/Sonnet profile collected above —
+# otherwise a Haiku default would get a [1m] it doesn't support.
+def base_of(v):
+    return re.sub(r"(?:\[1m\])+$", "", v) if isinstance(v, str) else None
+
+eligible = set()
+for src in (env, mo):
+    if isinstance(src, dict):
+        for k, v in src.items():
+            if is_opus_key(k) and isinstance(v, str) and "inference-profile/" in v:
+                eligible.add(base_of(v))
+
+m = data.get("model")
+if isinstance(m, str) and base_of(m) in eligible:
+    nm = with_1m(m)
+    if nm != m:
+        data["model"] = nm; changed = True
+
+if not changed:
+    print("claude settings: already up to date")
+    sys.exit(0)
+
+# atomic write + .bak, preserving 2-space indent and key order
+import shutil
+shutil.copy2(f, f + ".bak")
+d = os.path.dirname(f)
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".settings.", suffix=".json")
+with os.fdopen(fd, "w") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, f)
+print("claude settings: re-applied [1m]+window+output-tokens (backup: settings.json.bak)")
+PY
+}
+
+ai() {
+  cp ~/.claude/settings.json ~/.claude/settings.json.$(date +'%Y-%m-%d_%H-%M-%S')
+  chflags nouchg ~/.claude/settings.json
+  chflags nouchg ~/.claude/settings.json.bak
+
+  dev-login update
+  eval $(dev-login)
+
+  brew update
+  brew upgrade --no-ask
+
+  #brew upgrade claude-code
+  #brew upgrade dev-login
+  #brew upgrade ghost
+
+  ghost up
+  #ghost auth login
+  #ghost update
+  #ghost setup mcp
+  #ghost doctor mcp
+
+  #claude-login init
+  #claude-login > ~/.claude-session
+
+  # dev-login rewrites ~/.claude/settings.json and drops my manual tweaks.
+  # Re-apply them idempotently: [1m] (1M-context) on all Opus model ARNs,
+  # bigger auto-compact window, and bigger max output tokens.
+  _claude_reapply_settings
+
+  chflags uchg ~/.claude/settings.json
+  chflags uchg ~/.claude/settings.json.bak
+}
+

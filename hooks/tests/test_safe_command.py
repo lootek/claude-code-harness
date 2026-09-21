@@ -639,3 +639,25 @@ def test_missing_guard_asks_for_scripts_but_not_plain_commands(monkeypatch):
     decision, reason = evaluate("python3 some_script.py")
     assert decision == "ask" and "payload guard unavailable" in reason
     assert evaluate("ls -la /tmp")[0] == "allow"
+
+
+# ── local dashboard refresh (v2.5.1) ───────────────────────────────────────
+# Loopback AND /api/refresh are both required; neither half alone is enough.
+REFRESH_CASES = [
+    ("curl -X POST http://localhost:8888/api/refresh/slack-triage", "allow"),
+    ("curl -X POST http://localhost:9999/api/refresh", "allow"),
+    ("curl -X POST http://127.0.0.1:8888/api/refresh/x", "allow"),
+    ("curl -sS -X POST 'http://localhost:8888/api/refresh?force=1'", "allow"),
+    # loopback but a different path — still asks
+    ("curl -X POST http://localhost:8888/api/delete-everything", "ask"),
+    # right path, wrong host — still asks
+    ("curl -X POST https://evil.example.com/api/refresh", "ask"),
+    # a lookalike host must not pass
+    ("curl -X POST http://localhost.evil.example.com/api/refresh", "ask"),
+]
+
+
+@pytest.mark.parametrize("cmd,expected", REFRESH_CASES, ids=[c[0][:58] for c in REFRESH_CASES])
+def test_local_refresh_allowlist(cmd: str, expected: str):
+    decision, reason = evaluate(cmd)
+    assert decision == expected, f"{cmd}: got {decision} ({reason})"
