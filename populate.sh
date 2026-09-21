@@ -14,6 +14,10 @@
 #   tools/        cc.py + providers.yaml
 #   hooks/        6 hook files + tests/test_safe_command.py
 #   sh-aliases/   ai  (from ~/.zsh-aliases/ai)
+#   payload_guard.py + tests/test_payload_guard.py + tests/fixtures/
+#                 NOT captured — not deployed to ~/.claude/hooks yet, so this
+#                 repo is its source of truth. Add it to the capture loop above
+#                 on the day it gets wired into safe_command.py.
 #   plugins/      NOT captured — this repo is the source of truth. The live
 #                 copies under ~/.claude/plugins/ are a marketplace clone OF
 #                 this repo, so capturing them back would be circular.
@@ -104,12 +108,12 @@ skip ".cc-venv/ (recreate via install.sh)"
 skip "backups/ (local only)"
 skip "~/.secrets/ (tokens — never in a repo)"
 
-# ── hook test suite: never publish a broken safe_command.py ───────────────
+# ── hook test suites: never publish a broken safe_command.py or guard ─────
 if ! $DRY_RUN; then
-  say "hook tests (tests/test_safe_command.py)"
+  say "hook tests (tests/)"
   PY="$LIVE_CLAUDE/.cc-venv/bin/python"
   if [[ -x "$PY" ]] && "$PY" -c 'import pytest' 2>/dev/null; then
-    if ( cd "$REPO/hooks" && "$PY" -m pytest -q -p no:cacheprovider tests/test_safe_command.py 2>&1 | tail -3 | sed 's/^/    /' ; exit "${PIPESTATUS[0]}" ); then
+    if ( cd "$REPO/hooks" && "$PY" -m pytest -q -p no:cacheprovider tests/ 2>&1 | tail -3 | sed 's/^/    /' ; exit "${PIPESTATUS[0]}" ); then
       printf '    ok   hook tests pass\n'
     else
       die "hook tests FAILED against the captured files — do not commit"
