@@ -2,8 +2,8 @@
 """
 Claude Code PreToolUse hook: gates destructive / exfil-prone shell commands.
 
-Version:         2.4.0
-Last reviewed:   2026-09-09
+Version:         2.5.0
+Last reviewed:   2026-09-21
 Threat model:    LLM with ambient Bedrock/Vault/AWS/GitLab credentials,
                  broad Bash(bash:*), Bash(python3:*), Bash(aws:*), Bash(*CLI:*)
                  wildcards, and Edit/Write(~/**) — this hook is the last
@@ -12,6 +12,9 @@ Threat model:    LLM with ambient Bedrock/Vault/AWS/GitLab credentials,
 Out of scope:    Raw-network interception (pf, MITM proxy).
                  Burst-rate detection and canary tripwires.
 Post-deploy:     chflags uchg ~/.claude/hooks/safe_command.py
+                 chflags uchg ~/.claude/hooks/payload_guard.py
+                 (BOTH: this file imports the guard, so locking only this one
+                 leaves the other half of the boundary writable)
                  (unlock with: chflags nouchg <path>)
 
 Evaluator:
@@ -34,6 +37,7 @@ Audit log:   ~/.claude/hooks/safe_command_audit.jsonl  (append-only JSONL).
 from __future__ import annotations
 
 import datetime as _dt
+import importlib.util
 import json
 import os
 import re
@@ -1394,6 +1398,48 @@ def _is_neutral_segment(argv: list[str]) -> bool:
     return False
 
 
+# ────────────────────────────────────────────────────────────────────────────
+#  Payload guard — content of indirectly-executed scripts
+#
+#  This file only ever sees a command line, so `python3 post.py` is opaque to
+#  every rule above. payload_guard.py reads the payload instead. It lives beside
+#  this file and MUST carry the same chflags uchg lock: it is half of the same
+#  boundary, so leaving it writable would make the lock on this file pointless.
+#
+#  Loaded by absolute path rather than `import payload_guard`, so the hook does
+#  not depend on sys.path or the cwd it happens to be invoked from.
+# ────────────────────────────────────────────────────────────────────────────
+
+_PAYLOAD_GUARD = Path(__file__).resolve().parent / "payload_guard.py"
+_INDIRECT_RE = re.compile(
+    r"\b(python[23]?|perl|ruby|node|osascript|bash|sh|zsh|ksh|dash)\b|"
+    r"(^|[;&|]\s*)(source|\.)\s+\S|(^|[;&|]\s*)\./\S")
+
+
+def _payload_ask(command: str) -> str | None:
+    """ASK when a script or inline body about to run mutates something outside
+    this machine. Returns None when there is no payload to read.
+
+    If the guard cannot be loaded but the command *is* an indirect execution,
+    ask rather than allow — a missing or broken guard must not silently reopen
+    the hole. Commands with no payload are unaffected, so losing the file
+    cannot wedge the shell.
+    """
+    if not _INDIRECT_RE.search(command):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("payload_guard", _PAYLOAD_GUARD)
+        guard = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guard)
+        findings = guard.scan_command(command, cwd=os.getcwd())
+        if not findings:
+            return None
+        return guard.decide(findings)[1]
+    except Exception as exc:  # noqa: BLE001
+        return (f"payload guard unavailable ({type(exc).__name__}) and this "
+                f"command executes a script — confirm by hand")
+
+
 ASK_PREDICATES = [
     ask_git,
     ask_gh_glab,
@@ -1554,6 +1600,9 @@ def evaluate(command: str) -> tuple[str, str]:
 
     if saw_segment and explicit_hit and all_segments_ok:
         return "allow-explicit", "pre-approved command"
+
+    if ask_hit is None:
+        ask_hit = _payload_ask(norm)
 
     if ask_hit is not None:
         return "ask", ask_hit

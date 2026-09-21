@@ -57,13 +57,22 @@ echo "Backups (if any) -> $BACKUP"
 install_file "$SRC/tools/cc.py"          "$DST/tools/cc.py" 755
 install_file "$SRC/tools/providers.yaml" "$DST/tools/providers.yaml" 600
 
-# hooks (6 hook files + the test); runtime artifacts (audit log, pycache) are left alone
+# hooks (7 hook files + tests); runtime artifacts (audit log, pycache) are left alone
 for f in log_commands.py prompt_history.py export_session.py \
-         flush_stale_dumps.py safe_command.py session-env-check.sh; do
+         flush_stale_dumps.py safe_command.py payload_guard.py session-env-check.sh; do
   install_file "$SRC/hooks/$f" "$DST/hooks/$f"
   [ "${f##*.}" = "sh" ] || chmod +x "$DST/hooks/$f"
 done
 install_file "$SRC/hooks/tests/test_safe_command.py" "$DST/hooks/tests/test_safe_command.py"
+install_file "$SRC/hooks/tests/test_payload_guard.py" "$DST/hooks/tests/test_payload_guard.py"
+# synthetic fixtures for the payload-guard suite (inert: read as text, never run)
+mkdir -p "$DST/hooks/tests/fixtures"
+for f in "$SRC"/hooks/tests/fixtures/*; do
+  install_file "$f" "$DST/hooks/tests/fixtures/$(basename "$f")"
+done
+# safe_command.py imports payload_guard.py, so both halves of the boundary need
+# the immutable flag — locking only one leaves the other writable.
+echo "  NOTE: re-apply the lock:  chflags uchg $DST/hooks/safe_command.py $DST/hooks/payload_guard.py"
 
 # shell alias (ccc / ccr / ccprov)
 install_file "$SRC/sh-aliases/ai" "$ALIAS_DST/ai"

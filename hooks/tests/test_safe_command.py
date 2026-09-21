@@ -602,3 +602,40 @@ def test_internal_exception_denies(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '"permissionDecision": "deny"' in out
     assert "hook internal error" in out
+
+
+# ── payload guard wiring (v2.5.0) ──────────────────────────────────────────
+# The guard itself is covered by test_payload_guard.py. These assert only that
+# evaluate() actually reaches it, and that losing it fails safe.
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+PAYLOAD_CASES = [
+    ("python3", "glab_post_mr_note.py", "ask"),
+    ("bash", "vault_write_secret.sh", "ask"),
+    ("sh", "dd_wipe_disk.sh", "ask"),
+    ("bash", "sudo_privileged_ops.sh", "ask"),
+    ("python3", "read_only_report.py", "allow"),
+    ("bash", "mktemp_cleanup.sh", "allow"),
+]
+
+
+@pytest.mark.parametrize("runner,fixture,expected", PAYLOAD_CASES,
+                         ids=[f"{c[0]} {c[1]}" for c in PAYLOAD_CASES])
+def test_payload_guard_is_wired(runner: str, fixture: str, expected: str):
+    decision, reason = evaluate(f"{runner} {_FIXTURES / fixture}")
+    assert decision == expected, f"{fixture}: got {decision} ({reason})"
+
+
+def test_payload_guard_ask_names_the_line():
+    _, reason = evaluate(f"python3 {_FIXTURES / 'glab_post_mr_note.py'}")
+    assert "glab_post_mr_note.py:" in reason and "mutating" in reason
+
+
+def test_missing_guard_asks_for_scripts_but_not_plain_commands(monkeypatch):
+    """A deleted or broken guard must not silently reopen the hole, but must
+    not wedge commands that have no payload either."""
+    monkeypatch.setattr(safe_command, "_PAYLOAD_GUARD",
+                        Path("/nonexistent/payload_guard.py"))
+    decision, reason = evaluate("python3 some_script.py")
+    assert decision == "ask" and "payload guard unavailable" in reason
+    assert evaluate("ls -la /tmp")[0] == "allow"

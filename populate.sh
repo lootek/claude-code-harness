@@ -12,12 +12,9 @@
 #
 # Policy (explicit allowlists; nothing is auto-discovered):
 #   tools/        cc.py + providers.yaml
-#   hooks/        6 hook files + tests/test_safe_command.py
+#   hooks/        7 hook files (safe_command.py + payload_guard.py + 5) and
+#                 tests/ incl. the payload-guard fixtures
 #   sh-aliases/   ai  (from ~/.zsh-aliases/ai)
-#   payload_guard.py + tests/test_payload_guard.py + tests/fixtures/
-#                 NOT captured — not deployed to ~/.claude/hooks yet, so this
-#                 repo is its source of truth. Add it to the capture loop above
-#                 on the day it gets wired into safe_command.py.
 #   plugins/      NOT captured — this repo is the source of truth. The live
 #                 copies under ~/.claude/plugins/ are a marketplace clone OF
 #                 this repo, so capturing them back would be circular.
@@ -85,12 +82,17 @@ cp_file "$LIVE_CLAUDE/tools/providers.yaml" "$REPO/tools/providers.yaml"
 # ── hooks ─────────────────────────────────────────────────────────────────
 # Same 6 files install.sh deploys, plus the test. Runtime artifacts
 # (safe_command_audit.jsonl, __pycache__/) are deliberately left behind.
-say "hooks/  (6 hooks + tests/test_safe_command.py)"
+say "hooks/  (7 hooks + tests/)"
 for f in log_commands.py prompt_history.py export_session.py \
-         flush_stale_dumps.py safe_command.py session-env-check.sh; do
+         flush_stale_dumps.py safe_command.py payload_guard.py session-env-check.sh; do
   cp_file "$LIVE_CLAUDE/hooks/$f" "$REPO/hooks/$f"
 done
 cp_file "$LIVE_CLAUDE/hooks/tests/test_safe_command.py" "$REPO/hooks/tests/test_safe_command.py"
+cp_file "$LIVE_CLAUDE/hooks/tests/test_payload_guard.py" "$REPO/hooks/tests/test_payload_guard.py"
+mkdir -p "$REPO/hooks/tests/fixtures"
+for f in "$LIVE_CLAUDE"/hooks/tests/fixtures/*; do
+  cp_file "$f" "$REPO/hooks/tests/fixtures/$(basename "$f")"
+done
 skip "safe_command_audit.jsonl, __pycache__/, .pytest_cache/ (runtime artifacts)"
 
 # ── shell alias ───────────────────────────────────────────────────────────
