@@ -97,7 +97,15 @@ skip "safe_command_audit.jsonl, __pycache__/, .pytest_cache/ (runtime artifacts)
 
 # ── shell alias ───────────────────────────────────────────────────────────
 say "sh-aliases/  (ai -> ccc / ccr / ccprov)"
-cp_file "$LIVE_ALIASES/ai" "$REPO/sh-aliases/ai"
+# ~/.zsh-aliases/ai is machine-specific: another host may keep a different
+# ccc/ccr there (e.g. one wired to a cloud-hosted default provider). The repo
+# only owns the picker flavor, identified by its header line — never capture
+# anything else over it.
+if grep -q 'fzf-driven claude code provider/model picker' "$LIVE_ALIASES/ai" 2>/dev/null; then
+  cp_file "$LIVE_ALIASES/ai" "$REPO/sh-aliases/ai"
+else
+  skip "$LIVE_ALIASES/ai is not the picker flavor (machine-specific) — not captured"
+fi
 
 # ── not captured, for the record ──────────────────────────────────────────
 say "plugins/  (this repo is the source of truth; live copies are a marketplace clone of it)"

@@ -75,7 +75,13 @@ done
 echo "  NOTE: re-apply the lock:  chflags uchg $DST/hooks/safe_command.py $DST/hooks/payload_guard.py"
 
 # shell alias (ccc / ccr / ccprov)
-install_file "$SRC/sh-aliases/ai" "$ALIAS_DST/ai"
+# Only replace an `ai` that is absent or already the picker flavor. A host that
+# keeps its own machine-specific ccc/ccr there must not lose it to this one.
+if [ ! -s "$ALIAS_DST/ai" ] || grep -q 'fzf-driven claude code provider/model picker' "$ALIAS_DST/ai"; then
+  install_file "$SRC/sh-aliases/ai" "$ALIAS_DST/ai"
+else
+  echo "  SKIP $ALIAS_DST/ai — existing file is not the picker flavor; left untouched"
+fi
 
 # ── plugins: register the lootek marketplace from github + install the 4 public ones ──
 PUBLIC_PLUGINS=(imagine mr-monitor mr-review review-board)
