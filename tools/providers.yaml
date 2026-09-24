@@ -37,24 +37,50 @@ providers:
   anthropic:
     native: true
     max_output_tokens:
-    # Current Claude catalogue (api.anthropic.com IDs), refreshed Aug 2026.
-    # Context windows (claude code 2.1.212 context table):
-    #   claude-fable-5, claude-opus-5         → native_1m (auto 1M, no suffix)
-    #   claude-opus-4-{8,7,6}, claude-sonnet-{5,4-6} → 200k native, supports_1m_suffix
-    #       (append [1m] to the model id to unlock 1M; claude code strips it
-    #        before the API call and routes the 1m-beta header)
-    #   claude-haiku-4-5-20251001             → 200k only
-    # If ~/.secrets/anthropic exists, query /v1/models live; else use the list
-    # below. [1m] variants are emitted for the suffix-capable non-native models
-    # so the 1M option shows in fzf.
+    # Three sources, in order, each falling through to the next:
+    #
+    # 1. ~/.secrets/anthropic — if present, an explicit ask to hit the live
+    #    API instead of anything cached locally.
+    #
+    # 2. ~/.claude/cache/model-catalog/ — the claude code binary's own model
+    #    catalogue, populated by `claude`/`/login` itself (signed, versioned,
+    #    fetchedAt/staleAt). published-floor.json maps the current content
+    #    hash to the live published-<hash>.json; the picker reads
+    #    .document.surfaces.cc.model_selector_config[0].models[].id. This is
+    #    what caught claude-opus-5-5 missing from the old hardcoded list below
+    #    (added 2026-09) — prefer it, it can't go stale the way a hand
+    #    maintained list can. Internal/undocumented format: no public schema
+    #    promise, may change on a claude code update, and does not exist until
+    #    `claude` has run once.
+    #
+    # 3. Hardcoded fallback — pre-login, or if the cache format ever breaks.
+    #    Refreshed Sept 2026. [1m] variants only for the suffix-capable 200k
+    #    models per the claude code 2.1.212 context table (append [1m] to
+    #    unlock 1M; claude code strips it before the API call). Native-1M
+    #    models (fable-5, fable-5-1, opus-5, opus-5-5) get no suffix variant —
+    #    confirmed for opus-5-5: it does not honor [1m], consistent with the
+    #    catalog listing it at max_input_tokens=1000000 with no separate
+    #    suffix gate. NOTE: the same catalog now also shows opus-4-{8,7,6}
+    #    and sonnet-4-6 at max_input_tokens=1000000 (source #2, live), which
+    #    would mean the suffix these once needed is no longer required —
+    #    unverified against sources #1/#3, so the fallback below still emits
+    #    it rather than guess. claude-haiku-4-5-20251001 stays 200k only.
     listcmd: |
       if [[ -f ~/.secrets/anthropic ]]; then
         curl -s https://api.anthropic.com/v1/models \
           -H "anthropic-version: 2023-06-01" \
           -H "x-api-key: $(cat ~/.secrets/anthropic)" \
         | jq -r '.data[].id' 2>/dev/null
+      elif cat=~/.claude/cache/model-catalog; \
+           hash=$(jq -r '.sources | keys[0] // empty' "$cat/published-floor.json" 2>/dev/null); \
+           [[ -n "$hash" && -f "$cat/published-$hash.json" ]] && \
+           ids=$(jq -r '.document.surfaces.cc.model_selector_config[0].models[]?.id' \
+                   "$cat/published-$hash.json" 2>/dev/null) && \
+           [[ -n "$ids" ]]; then
+        printf '%s\n' "$ids"
       else
         for m in \
+          claude-fable-5-1 \
           claude-fable-5 \
           claude-opus-5-5 \
           claude-opus-5 \
@@ -67,7 +93,7 @@ providers:
         do
           printf '%s\n' "$m"
           case "$m" in
-            claude-opus-4-*|claude-sonnet-*) printf '%s[1m]\n' "$m" ;;
+            claude-opus-4-*|claude-sonnet-4-*) printf '%s[1m]\n' "$m" ;;
           esac
         done
       fi
