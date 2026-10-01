@@ -1,3 +1,5 @@
+> **Archived 2026-10-01 — succeeded by [lootek/ai-harness](https://github.com/lootek/ai-harness)** (multi-CLI: claude/codex/opencode). Everything here lives on there.
+
 # claude-code-harness
 
 fzf-driven provider/model switching for [Claude Code](https://claude.com/claude-code). Pick a backend (Anthropic, Ollama, OpenRouter, Poe, Z.AI), pick a model, and `claude` launches with the right `ANTHROPIC_*` env exported.
