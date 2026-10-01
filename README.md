@@ -1,6 +1,17 @@
-> **Archived 2026-10-01 — succeeded by [lootek/ai-harness](https://github.com/lootek/ai-harness)** (multi-CLI: claude/codex/opencode). Everything here lives on there.
+# claude-code-harness (archived)
 
-# claude-code-harness
+> **This repo is archived (2026-10-01) and no longer maintained.**
+> Its successor is **[lootek/ai-harness](https://github.com/lootek/ai-harness)** — the same harness generalized to three CLIs: **claude / codex / opencode**. Everything below still works, but all new development, installs, and fixes happen over there.
+
+**Moved to [ai-harness](https://github.com/lootek/ai-harness):**
+
+- `tools/cc.py` + `ccc`/`ccr` → `ai.py` + `ai`/`air` (one picker for all three CLIs; `--cli claude|codex|opencode`)
+- `tools/providers.yaml` → `providers.yaml` at the repo root, with per-CLI routing (`clis:` blocks)
+- `hooks/` → `hooks/` (claude) plus `adapters/codex/` and opencode plugins — same safe-command guard, audit log, and history hooks on every CLI
+- `plugins/` (imagine, mr-monitor, mr-review, review-board) → same 4 plugins, served by the `lootek` marketplace from the new repo; skills also install standalone for codex/opencode
+- Install: `git clone` + `bash install.sh` replaces the manual copy steps below
+
+The rest of this README describes the original Claude-Code-only setup, kept for reference.
 
 fzf-driven provider/model switching for [Claude Code](https://claude.com/claude-code). Pick a backend (Anthropic, Ollama, OpenRouter, Poe, Z.AI), pick a model, and `claude` launches with the right `ANTHROPIC_*` env exported.
 
